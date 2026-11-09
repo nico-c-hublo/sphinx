@@ -137,7 +137,7 @@ To github.com:you/your-repo.git
 - **Closing the tab** doesn't stop anything. Git keeps waiting, and the same address works until the 25-minute deadline.
 - **Skip this time.** Lets the push through immediately, even while the review is still running. Skips never count as passing.
 - **`sphinx yolo`** turns checks off for the current repository, or globally when run outside one. Run it again to turn checks back on. A repository's own setting wins over the global one, so turning yolo off inside a repository keeps checks on there even while global yolo is on. `--reason "prod hotfix"` is optional.
-- **`sphinx check`** runs the same check in your terminal instead of the browser.
+- **`sphinx check`** starts the same check yourself, with no Git operation waiting, for example to check a pull request's branch after the fact: `sphinx check --remote origin --branch main`. It asks where your `interface` setting says, as a push does; `--browser` or `--terminal` picks for one run.
 - **Headless or terminal-first.** Over SSH, or anywhere Sphinx can't open the browser in the background, the questions appear right in the terminal where you ran `git push`. Type `/hint`, `/learn`, `/dispute <reason>`, `/skip`, or `/stop` (`/quit` also works) there, and `continue` or `stop` after you pass. To always use the terminal, run `sphinx config --interface terminal`; to always use the browser, use `--interface browser`.
 - **On GitHub.** With the GitHub CLI (`gh`) signed in, a pass stamps the pushed commit. For a push to a pull request branch, the questionnaire offers "Post the Sphinx stamp to the pull request": a comment summarising the questions and first-try results. Add the Sphinx Action to a repository (`sphinx init --github-check`) and its pull requests show a **Sphinx** check: stamped with that summary, or neutral until the author passes. None of this ever blocks a push. See [GitHub stamps and the Sphinx check](docs/configuration.md#github-commit-status-and-pull-requests).
 
@@ -285,7 +285,7 @@ These live in `config.json`, and most can be set with `sphinx config`:
 | Setting | Flag | What it means |
 | --- | --- | --- |
 | `models` | `--preset`, `--small`, `--medium`, `--large` | The reviewer for each change size |
-| `interface` | `--interface` | Where questions appear. `auto` (default): the browser on a local Mac, otherwise the terminal you pushed from. Or `browser` / `terminal` |
+| `interface` | `--interface` | Where questions appear, for a push and for `sphinx check`. `auto` (default): the browser on a local Mac, otherwise the terminal you pushed from. Or `browser` / `terminal` |
 | `maxModelCalls` | `--max-model-calls` | Optional cap on model requests per check (1–100, or `unlimited`, the default) |
 | `maxOutputTokens` | `--max-output-tokens` | Output allowance per request, including reasoning (default 4096) |
 | `allowPaid` | `--allow-paid` | Lets OpenRouter use paid models |

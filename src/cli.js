@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { lstat, readFile } from 'node:fs/promises';
 import { parseArgs, promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import { presentationRequest } from './presentations.js';
+import { prefersTerminal } from './git-interview.js';
+import { createBrowserInterview, offLimits } from './browser-interview.js';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 import { DISTANCES, getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash, routeMigrationNotice, routeMigrationNoticeShown } from './config.js';
@@ -34,7 +37,7 @@ const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
   activate: ['agents', 'json'],
-  init: ['yes', 'json', 'context', 'suggest', 'apply', 'github-check', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
+  init: ['yes', 'json', 'context', 'suggest', 'apply', 'github-check', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review', 'browser', 'terminal'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
   status: ['json'], config: ['json', 'distance', 'interface', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
@@ -407,6 +410,8 @@ function printSession(session, terminal = ui()) {
 
 async function checkCommand(values) {
   if (values['retry-review'] && !values.id) throw new Error('--retry-review requires --id to select the failed checkpoint. Find it with sphinx pending.');
+  if (values.browser && values.terminal) throw new Error('Choose one of --browser or --terminal.');
+  for (const flag of ['browser', 'terminal']) if (values[flag] && values.json) throw new Error(`--${flag} shows the questionnaire to a person and cannot be combined with --json.`);
   const { repo, config } = await repoConfig(); let session;
   if (values.id) session = await store.read(values.id);
   else if (!values.staged && !values.remote && !values.branch) {
@@ -418,6 +423,7 @@ async function checkCommand(values) {
     if (!snapshot) { if (values.json) json({ status: 'not-required' }); else ui().success('No assessment required by the current policy.'); return 0; }
     session = await store.ensure(snapshot, config);
   }
+  if (!values.json && questionnaireInterface(values, config) === 'browser') return browserCheck(session, config, { retry: values['retry-review'] });
   if (!values.json && !process.stdin.isTTY) throw new Error('Use sphinx check --json from a coding agent, or run in an interactive terminal.');
   const start = signal => withProgress(session.questions.length ? 'Loading prepared questions' : `Reviewing the change with ${routeText(session.route)}`, () => store.start(session.id, config, { signal }), { enabled: !values.json });
   if (values.json) {
@@ -448,6 +454,46 @@ async function checkCommand(values) {
       },
     });
   }, { controller });
+}
+
+// Where a hand-started check asks: --browser or --terminal for this run, otherwise the
+// interface setting, as for Git. Without a flag a person must be at this terminal, so a
+// coding agent's shell never opens the page, and a page Sphinx can't show (CI) falls back here.
+export function questionnaireInterface(values, config, { env = process.env, isTTY = process.stdin.isTTY, platform = process.platform } = {}) {
+  if (values.browser) return 'browser';
+  if (values.terminal || !isTTY) return 'terminal';
+  return prefersTerminal(config, { env, platform }) || offLimits(env) ? 'terminal' : 'browser';
+}
+
+// The local browser questionnaire Git serves, for a check a person starts by hand.
+// No Git operation waits on it, so the page ends on a pass or a pause without
+// asking whether to continue anything.
+async function browserCheck(session, config, { retry = false } = {}) {
+  const unavailable = reason => Object.assign(new Error(`The browser questionnaire is not available here${reason === 'noninteractive' ? ' (CI or an evaluator process)' : ''}. Run sphinx check --id ${session.id} in a terminal instead.`), { exitCode: 1 });
+  // Refuse before --retry-review: a process that can never show the page must not extend the review's allowance.
+  if (offLimits(process.env)) throw unavailable('noninteractive');
+  // The same signals the terminal check and the Git gate handle, so closing the terminal also saves and closes the page.
+  const controller = new AbortController(), stop = () => controller.abort(cancelled()), signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  for (const name of signals) process.on(name, stop);
+  const interview = createBrowserInterview({ env: process.env, signal: controller.signal });
+  const terminal = ui();
+  try {
+    if (retry) await store.retryReview(session.id, config, { signal: controller.signal });
+    // Each run is its own presentation attempt, as each Git operation is.
+    const request = presentationRequest(session);
+    const result = await interview.present({ request });
+    if (result.status === 'unavailable') throw unavailable(result.reason);
+    if (result.status === 'passed') { terminal.success('Understanding check complete.'); return 0; }
+    // The page shows why a check could not finish; say it here too, since the page may be gone.
+    const { phase, error } = interview.state || {};
+    if (phase === 'error' && error) terminal.warning(error);
+    terminal.note(`Progress saved. Run sphinx check --browser --id ${session.id} when you are ready to continue.`);
+    // An interrupted check exits like any cancelled command; a pause from the page is an ordinary stop.
+    return controller.signal.aborted ? controller.signal.reason.exitCode : 1;
+  } finally {
+    for (const name of signals) process.off(name, stop);
+    await interview.close();
+  }
 }
 
 function printPending(terminal, pending) {
@@ -501,7 +547,7 @@ export function parseCommandLine(argv) {
     preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, interface: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, 'github-check': { type: 'boolean' }, suggest: { type: 'boolean' }, apply: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
-    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
+    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, browser: { type: 'boolean' }, terminal: { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
   } });
   const [command, id] = positionals;
   if (values.version || values.help || !command || command === 'help') return { values, command, id };
