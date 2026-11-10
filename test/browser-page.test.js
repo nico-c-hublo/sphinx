@@ -434,6 +434,8 @@ test('the header button reads Stop push or Stop commit while Git waits, and Paus
   const manual = page(); manual.update({ ...question, waitingGit: false });
   assert.equal(manual.nodes.pause.textContent, 'Pause check');
   assert.equal(manual.nodes.waiting.textContent, 'Closing this tab leaves the check waiting. Use Pause check to stop.');
+  assert.equal(manual.nodes.skip.hidden, true, 'with no Git operation waiting there is nothing to skip past');
+  assert.equal(commit.nodes.skip.hidden, false, 'Skip stays offered while Git waits');
   manual.update({ ...question, waitingGit: false, sequence: 2, phase: 'paused', message: 'Paused. Your progress is saved.' });
   assert.equal(manual.nodes.status.textContent, 'Paused');
 });

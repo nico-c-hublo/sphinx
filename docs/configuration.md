@@ -303,7 +303,7 @@ The workflow pins the Action to a Sphinx release tag (`parthh01/sphinx/action@v0
 
 ## Browser or terminal
 
-`interface` in `config.json` chooses where a push's questions appear. Set it with `sphinx config --interface <auto|browser|terminal>`.
+`interface` in `config.json` chooses where questions appear, for a push and for a check you start with `sphinx check`. Set it with `sphinx config --interface <auto|browser|terminal>`; `sphinx check --browser` or `--terminal` overrides it for one run.
 
 | Value | Behavior |
 | --- | --- |
@@ -311,4 +311,4 @@ The workflow pins the Action to a Sphinx release tag (`parthh01/sphinx/action@v0
 | `terminal` | Always the terminal |
 | `browser` | Always the browser (on Linux and over SSH, open the printed local URL) |
 
-Inline questions need a terminal a person is looking at. When Git runs from a coding agent's shell there isn't one, so Sphinx opens a terminal window on a desktop instead, and falls back to the browser when it can't do either. `interface` is a personal setting; it can't be set in `.sphinxconfig` and doesn't change what a check asks.
+Inline questions need a terminal a person is looking at. When Git runs from a coding agent's shell there isn't one, so Sphinx opens a terminal window on a desktop instead, and falls back to the browser when it can't do either. Without a flag, `sphinx check` needs a terminal a person is using, so a coding agent's shell never opens the page; in CI, where the page is never served, it asks in that terminal. `interface` is a personal setting; it can't be set in `.sphinxconfig` and doesn't change what a check asks.

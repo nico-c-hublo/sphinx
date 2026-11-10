@@ -22,7 +22,8 @@ import { pullRequestPush, usesSphinxAction } from './github.js';
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
 const equal = (a, b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-const offLimits = env => env.SPHINX_EVALUATOR === '1' || (env.CI && !['false', '0'].includes(env.CI));
+// CI and evaluator processes never show a questionnaire page.
+export const offLimits = env => env.SPHINX_EVALUATOR === '1' || (env.CI && !['false', '0'].includes(env.CI));
 // A waiting Git operation in the page's words, as its scope line names it.
 const words = event => event === 'pre-commit' ? ['commit', 'Commit'] : ['push', 'Push'];
 // What a pass that did not go through still does: the Git gate holds it until Continue.
@@ -252,6 +253,8 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     }
     const consenting = ['proceed', 'stop'].some(action => resolver?.allowed.includes(action));
     if (data.action === 'skip') {
+      // A skip lets a waiting Git operation through; with none waiting there is nothing to let through.
+      if (!waitingGit) return send(res, 409, { error: 'Skipping is only available while a Git operation is waiting.' });
       if (consenting) return send(res, 409, { error: `Choose continue or stop for this ${words(state.event)[0]}.` });
       // Available at any step, including while the review is still running.
       skip = { reason: data.response };
@@ -380,11 +383,13 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       distance = { current: session.config?.distance ?? config.distance, next: null, scope: repoSets ? 'repository' : 'machine' };
       const target = session.snapshot.target || {}, branch = name => String(name || '').replace(/^refs\/heads\//, '');
       const source = branch(session.snapshot.sourceRef), destination = branch(target.ref);
-      resumeCommand = !waitingGit ? `sphinx check --id ${request.id}`
+      // With no Git operation waiting, resume on this same page rather than in the terminal.
+      resumeCommand = !waitingGit ? `sphinx check --browser --id ${request.id}`
         : session.snapshot.event === 'pre-commit' ? 'git commit'
         : target.remote && destination ? `git push ${target.remote} ${source && source !== destination ? `${source}:${destination}` : destination}` : 'git push';
       stamp = null;
-      if (await pullRequestPush(session.snapshot).catch(() => false)) {
+      // Only the waiting Git hook posts the stamp, so a check started by hand never offers it.
+      if (waitingGit && await pullRequestPush(session.snapshot).catch(() => false)) {
         const action = await usesSphinxAction(request.repoRoot).catch(() => false);
         stamp = { post: stampChoices.get(request.id) ?? (action || !!config.github?.comment), action };
         stampChoices.set(request.id, stamp.post);

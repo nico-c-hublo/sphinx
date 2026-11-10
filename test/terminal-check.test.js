@@ -5,6 +5,7 @@ import { Writable } from 'node:stream';
 import { runTerminalCheck } from '../src/terminal-check.js';
 import { createTerminal } from '../src/terminal.js';
 import { prefersTerminal, runGitTerminalCheck } from '../src/git-interview.js';
+import { questionnaireInterface } from '../src/cli.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const question = (id, prompt, extra = {}) => ({ id, prompt, choices: [], ...extra });
@@ -77,6 +78,20 @@ test('auto uses the terminal unless the browser can open in the background', () 
   assert.equal(prefersTerminal({ interface: 'auto' }, { env: {}, platform: 'linux' }), true);
   assert.equal(prefersTerminal({ interface: 'terminal' }, { env: {}, platform: 'darwin' }), true);
   assert.equal(prefersTerminal({ interface: 'browser' }, { env: { SSH_TTY: '/dev/x' }, platform: 'linux' }), false);
+});
+
+test('sphinx check follows interface like Git, --browser and --terminal override it, and only a person at a terminal gets the page without a flag', () => {
+  const ask = (values, config, options) => questionnaireInterface(values, config, { env: {}, isTTY: true, platform: 'darwin', ...options });
+  assert.equal(ask({}, { interface: 'auto' }), 'browser', 'auto: the browser on a local Mac');
+  assert.equal(ask({}, { interface: 'auto' }, { env: { SSH_CONNECTION: '1' } }), 'terminal', 'auto over SSH, where the page cannot open');
+  assert.equal(ask({}, { interface: 'auto' }, { platform: 'linux' }), 'terminal');
+  assert.equal(ask({}, { interface: 'browser' }, { platform: 'linux' }), 'browser', 'browser prints the local URL where it cannot open the page');
+  assert.equal(ask({}, { interface: 'terminal' }), 'terminal');
+  assert.equal(ask({ terminal: true }, { interface: 'browser' }), 'terminal');
+  assert.equal(ask({ browser: true }, { interface: 'terminal' }, { platform: 'linux' }), 'browser');
+  assert.equal(ask({}, { interface: 'browser' }, { env: { CI: '1' } }), 'terminal', 'CI never serves the page, so the setting falls back to the terminal');
+  assert.equal(ask({}, { interface: 'browser' }, { isTTY: false }), 'terminal', 'a coding agent\'s shell keeps the terminal path and its --json guidance');
+  assert.equal(ask({ browser: true }, { interface: 'auto' }, { isTTY: false }), 'browser', '--browser needs no terminal');
 });
 
 test('after a waiting pass, continue lets Git through and stop keeps the receipt without continuing', async () => {

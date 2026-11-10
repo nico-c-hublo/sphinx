@@ -339,7 +339,7 @@ function render(state){
  $('question').hidden=state.phase!=='question'||messages.some(item=>item.kind==='question'&&item.questionId===state.question?.id);
  $('composer').hidden=!['question','working'].includes(state.phase)&&!state.error;
  $('form').hidden=!['question','working'].includes(state.phase);
- $('recovery').hidden=state.phase!=='recovery';$('consent').hidden=state.phase!=='consent';$('pause').hidden=finished||state.phase==='consent';$('skip').hidden=finished||state.phase==='consent';if(finished||state.phase==='consent')$('skipbar').hidden=true;
+ $('recovery').hidden=state.phase!=='recovery';$('consent').hidden=state.phase!=='consent';$('pause').hidden=finished||state.phase==='consent';$('skip').hidden=finished||state.phase==='consent'||!state.waitingGit;if(finished||state.phase==='consent'||!state.waitingGit)$('skipbar').hidden=true;
  if(state.question){
   text('prompt',state.question.prompt);$('choices').replaceChildren();
   for(const choice of state.question.choices||[]){const li=document.createElement('li');li.textContent=choice;$('choices').append(li);}

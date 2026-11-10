@@ -441,3 +441,51 @@ test('a check passed with sphinx answer while the browser page waits lets the sa
   assert.equal(await f.bare('rev-parse', 'refs/heads/main'), head);
   assert.equal(f.children.length, 1); assert.deepEqual(await f.hooks(), ['pre-push']);
 });
+
+test('sphinx check --browser serves the page with no Git operation waiting, resumes a pause there, and ends on a pass without asking to continue', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  // The real CLI with no terminal at all: stdin is ignored and nothing is marked as a TTY.
+  const startCheck = (...args) => {
+    const child = spawn(process.execPath, [CLI, 'check', '--browser', ...args], { cwd: f.repo, env: f.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    f.children.push(child); let output = '';
+    child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+    child.finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal, output })); });
+    child.output = () => output;
+    return child;
+  };
+  const ended = child => Promise.race([child.finished, delay(15000).then(() => assert.fail(`sphinx check --browser kept running: ${child.output()}`))]);
+
+  const first = startCheck(), page = await f.question(first);
+  assert.equal(page.state.waitingGit, false, 'no Git operation waits on a manual check');
+  assert.equal(page.state.question.id, 'duplicate');
+  assert.equal(page.state.question.expectedAnswer, undefined);
+  assert.match(first.output(), /No application was brought to the foreground/);
+  assert.equal((await f.submit(page, 'pause')).status, 200);
+  const paused = await f.until(first, page.url, 'paused');
+  assert.equal(paused.resume, `sphinx check --browser --id ${page.state.id}`, 'a pause reopens on the page, not in the terminal');
+  const stopped = await ended(first);
+  assert.equal(stopped.code, 1, stopped.output);
+  // The terminal wraps long lines, so any whitespace may separate the words.
+  assert.match(stopped.output, new RegExp(`Progress saved\\.\\s+Run\\s+sphinx\\s+check\\s+--browser\\s+--id\\s+${page.state.id}`));
+  await assert.rejects(fetch(`${page.url}/state`), 'the listener closes when the command ends');
+
+  // Closing the terminal saves the check and closes the page, like Ctrl+C.
+  const hungUp = startCheck('--id', page.state.id), open = await f.question(hungUp);
+  process.kill(-hungUp.pid, 'SIGHUP');
+  const hangup = await ended(hungUp);
+  assert.equal(hangup.code, 130, hangup.output);
+  assert.match(hangup.output, new RegExp(`Progress saved\\.\\s+Run\\s+sphinx\\s+check\\s+--browser\\s+--id\\s+${page.state.id}`));
+  await assert.rejects(fetch(`${open.url}/state`), 'a hang-up closes the listener too');
+
+  const second = startCheck('--id', page.state.id), resumed = await f.question(second);
+  assert.equal(resumed.state.id, page.state.id); assert.equal(resumed.state.waitingGit, false);
+  assert.equal((await f.submit(resumed, 'answer', ANSWER)).status, 202);
+  const done = await f.until(second, resumed.url, 'passed');
+  assert.match(done.message, /You passed\. You can close this tab\./);
+  const passed = await ended(second);
+  assert.equal(passed.code, 0, passed.output);
+  assert.match(passed.output, /Understanding check complete/);
+  assert.equal((await f.sessions()).find(session => session.id === page.state.id).status, 'passed');
+  await assert.rejects(f.bare('rev-parse', '--verify', 'refs/heads/main'), 'a manual check never pushes');
+  assert.equal((await f.calls()).some(call => call.leaked), false, 'ignored files stay out of model requests');
+});

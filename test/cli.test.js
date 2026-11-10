@@ -335,10 +335,48 @@ test('each public CLI command provides contextual help without setup or model ca
   }
   assert.match(f.cli('init', '--help'), /\.sphinxconfig/);
   assert.match(f.cli('check', '--help'), /--staged/);
+  assert.match(f.cli('check', '--help'), /--browser/);
   assert.match(f.cli('install', '--help'), /--allow-paid/);
   await assert.rejects(stat(path.join(f.repo, '.sphinxconfig')), { code: 'ENOENT' });
   await assert.rejects(stat(path.join(f.env.SPHINX_HOME, 'config.json')), { code: 'ENOENT' });
   assert.deepEqual(await f.calls(), []);
+});
+
+test('check --browser and --terminal refuse --json and each other; --browser in CI says to use the terminal without a model call', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  const both = f.run(process.execPath, [CLI, 'check', '--browser', '--json']);
+  assert.equal(both.status, 1);
+  // Error text is wrapped to the terminal width, so words may be split by any whitespace.
+  assert.match(both.stderr, /--browser .*cannot\s+be\s+combined\s+with\s+--json/s);
+  const terminalJson = f.run(process.execPath, [CLI, 'check', '--terminal', '--json']);
+  assert.equal(terminalJson.status, 1); assert.match(terminalJson.stderr, /--terminal .*cannot\s+be\s+combined\s+with\s+--json/s);
+  const conflicting = f.run(process.execPath, [CLI, 'check', '--browser', '--terminal']);
+  assert.equal(conflicting.status, 1); assert.match(conflicting.stderr, /Choose\s+one\s+of\s+--browser\s+or\s+--terminal/);
+  // The fixture runs with CI=1, where no questionnaire is ever served.
+  const ci = f.run(process.execPath, [CLI, 'check', '--browser']);
+  assert.equal(ci.status, 1, `${ci.stdout}\n${ci.stderr}`);
+  assert.match(ci.stderr, /browser\s+questionnaire\s+is\s+not\s+available\s+here\s+\(CI\s+or\s+an\s+evaluator\s+process\)/);
+  assert.match(ci.stderr, /sphinx\s+check\s+--id\s+[a-f0-9]{64}\s+in\s+a\s+terminal/);
+  assert.doesNotMatch(`${ci.stdout}${ci.stderr}`, /Sphinx questionnaire: http/);
+  assert.deepEqual(await f.calls(), [], 'an unavailable page starts no review');
+});
+
+test('check --browser --retry-review in CI refuses before extending the failed review', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  f.cli('config', '--max-model-calls', '20');
+  assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
+  assert.equal(f.run(process.execPath, [CLI, 'check', '--json'], { env: { ...f.env, SPHINX_TEST_FAILURE: '1' } }).status, 1);
+  const before = f.cliJson('pending')[0], calls = (await f.calls()).length;
+  const ci = f.run(process.execPath, [CLI, 'check', '--browser', '--retry-review', '--id', before.id]);
+  assert.equal(ci.status, 1, `${ci.stdout}\n${ci.stderr}`);
+  assert.match(ci.stderr, /browser\s+questionnaire\s+is\s+not\s+available\s+here/);
+  assert.equal((await f.calls()).length, calls);
+  const record = JSON.parse(await readFile(path.join(f.env.SPHINX_HOME, 'sessions', `${before.id}.json`), 'utf8'));
+  assert.equal(record.reviewRetries, undefined, 'a process that cannot show the page authorizes no retry');
+  assert.equal(record.preparation.status, 'failed', 'the review can still be retried from a terminal');
+  assert.deepEqual(f.cliJson('pending')[0].usage, before.usage);
 });
 
 test('scripted installation defers client launch and activate checks configured selections', async t => {

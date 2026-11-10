@@ -11,12 +11,16 @@ const filename = (token, env) => {
   return path.join(directory(env), `${token}.json`);
 };
 
-/** Git alone creates these requests. They contain routing metadata, never code or answers. */
+/** One attempt to show a checkpoint's questionnaire: routing metadata, never code or answers. */
+export function presentationRequest(session) {
+  return { version: 1, token: randomUUID(), id: session.id, repoRoot: session.snapshot.repoRoot, createdAt: Date.now() };
+}
+
+/** Git alone queues these requests. */
 export async function queuePresentation(session, { env = process.env, delivery } = {}) {
   if (delivery !== undefined && delivery !== 'hook') throw new Error('Invalid questionnaire delivery.');
   const request = {
-    version: 1, token: randomUUID(), id: session.id,
-    repoRoot: session.snapshot.repoRoot, createdAt: Date.now(),
+    ...presentationRequest(session),
     ...(delivery === 'hook' ? { delivery } : {}),
     ...(env.PI_SESSION_ID ? { host: 'pi', hostSession: env.PI_SESSION_ID }
       : env.SPHINX_OPENCODE_SESSION ? { host: 'opencode', hostSession: env.SPHINX_OPENCODE_SESSION }

@@ -291,6 +291,22 @@ test('the page receives a chat transcript of questions, answers, feedback, follo
   assert.equal((await done).status, 'passed');
 });
 
+test('with no Git operation waiting, skip is refused and the check stays pending', async t => {
+  const f = await fixture(t);
+  const { delivery, ...manual } = f.request;
+  const done = f.present(manual); await f.waitFor('question');
+  assert.equal(f.interview.state.waitingGit, false);
+  const response = await f.post('skip', { response: 'prod is down' });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /only available while a Git operation is waiting/);
+  assert.equal(f.interview.state.phase, 'question');
+  assert.deepEqual(await recentOverrides({ env: f.env }), [], 'a refused skip logs no override');
+  assert.equal((await f.post('pause')).status, 200);
+  assert.equal((await done).status, 'pending');
+  assert.notEqual((await f.store.read(f.snapshot.id)).status, 'skipped', 'the check is kept, not closed as skipped');
+  assert.equal((await f.store.pending(f.snapshot.repoRoot)).length, 1, 'and it still resurfaces as pending');
+});
+
 test('Skip this time lets Git continue during review, logs the reason, and never writes a receipt', async t => {
   let entered;
   const reviewing = new Promise(resolve => { entered = resolve; });
@@ -759,7 +775,7 @@ test('the page shows the question distance and saves a repository change only wh
   assert.equal(JSON.parse(await readFile(path.join(f.snapshot.repoRoot, '.sphinxconfig'), 'utf8')).distance, 'low');
 });
 
-test('a push that may be a pull request offers posting the stamp there, and the Git hook gets the choice', async t => {
+test('a push that may be a pull request offers posting the stamp there, the Git hook gets the choice, and a manual check offers none', async t => {
   const pr = await fixture(t, { snapshotOverrides: { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } } });
   pr.present(); await pr.waitFor('question');
   assert.deepEqual(pr.interview.state.stamp, { post: false, action: false });
@@ -770,6 +786,11 @@ test('a push that may be a pull request offers posting the stamp there, and the 
   const main = await fixture(t);
   main.present(); await main.waitFor('question');
   assert.equal(main.interview.state.stamp, undefined, 'a push to main is not a pull request');
+  const manual = await fixture(t, { snapshotOverrides: { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } } });
+  const { delivery, ...request } = manual.request;
+  manual.present(request); await manual.waitFor('question');
+  assert.equal(manual.interview.state.stamp, undefined, 'with no Git operation waiting, nothing would post the stamp');
+  assert.equal((await fetch(`${manual.interview.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(manual.interview.url).origin, 'X-Sphinx-Token': new URL(manual.interview.url).pathname.slice(1) }, body: JSON.stringify({ post: true }) })).status, 409);
 });
 
 test('a paused push shows the exact command that resumes it', async t => {
