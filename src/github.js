@@ -27,10 +27,32 @@ export function githubRepository(url) {
   return { host: match[1], owner: match[2], repo: match[3] };
 }
 
-/** owner/repo on a GitHub host, and the number, from a pull request's web URL. */
+/** The repository (owner/repo on a GitHub host) and the number from a pull request's web URL. */
 export function pullRequestRepository(url) {
   const match = /^https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\/?$/.exec(String(url || ''));
-  return match ? { host: match[1], owner: match[2], repo: match[3], number: Number(match[4]) } : null;
+  return match ? { repository: { host: match[1], owner: match[2], repo: match[3] }, number: Number(match[4]) } : null;
+}
+
+/**
+ * The pull request a check names (sphinx check --pull-request), or null for a push.
+ * Its repository is the base repository the pull request lives in, or null when the
+ * recorded URL does not name that pull request, so nothing is stamped there.
+ */
+export function pullRequestCheck(snapshot) {
+  const recorded = snapshot?.event === 'pre-push' ? snapshot.target?.pullRequest : null;
+  if (!recorded) return null;
+  const named = pullRequestRepository(recorded.url);
+  return { number: recorded.number, url: recorded.url, repository: named?.number === recorded.number ? named.repository : null };
+}
+
+// Where a stamp goes and what its comment summarises: a pull request check's own pull
+// request, or the pushed branch, whose pull request the worker looks up. Null when it has nowhere to go.
+function stampTarget(snapshot) {
+  if (snapshot?.event !== 'pre-push') return null;
+  const pull = pullRequestCheck(snapshot);
+  if (pull) return pull.repository && { repo: pull.repository, key: `pull/${pull.repository.owner}/${pull.repository.repo}/${pull.number}`, pullRequest: pull.number };
+  const repo = githubRepository(snapshot.target?.url);
+  return repo && { repo, key: snapshot.target.ref };
 }
 
 /** What one check means for the stamp. Never includes private answer keys. */
@@ -113,27 +135,21 @@ export function commentBody(records, { stampHead } = {}) {
 export async function scheduleStamp({ snapshot, session, outcome, config, env = process.env, spawnImpl = spawn, post }) {
   try {
     const settings = config.github || {};
-    // A pull request check (sphinx check --pull-request) names its pull request, which
-    // lives in the base repository; a push only knows the remote it went to.
-    const pull = snapshot.target.pullRequest ? pullRequestRepository(snapshot.target.pullRequest.url) : null;
-    if (snapshot.target.pullRequest && pull?.number !== snapshot.target.pullRequest.number) return false;
-    const repo = pull ? { host: pull.host, owner: pull.owner, repo: pull.repo } : githubRepository(snapshot.target.url);
-    if (snapshot.event !== 'pre-push' || !repo) return false;
+    const target = stampTarget(snapshot);
+    if (!target) return false;
     // With the Sphinx Action, its check run replaces the commit status and reads the comment.
     const action = await usesSphinxAction(snapshot.repoRoot);
     const comment = typeof post === 'boolean' ? post : action || !!settings.comment;
     const status = !!settings.status && !action;
     if (!status && !comment) return false;
-    // The comment summarises every check recorded under one key: the pushed branch, or
-    // for a pull request check the pull request, since many share one base branch.
-    const key = pull ? `pull/${repo.owner}/${repo.repo}/${pull.number}` : snapshot.target.ref;
-    const file = branchFile(snapshot.repoRoot, key, env);
+    const file = branchFile(snapshot.repoRoot, target.key, env);
     const stored = await readJson(file, null).catch(() => null);
     const record = checkRecord({ session, snapshot, outcome, includeAnswers: !!settings.answers });
     const records = [...(Array.isArray(stored?.records) ? stored.records : []).filter(item => item.head !== record.head), record].slice(-RECORDS_KEPT);
-    await writeJson(file, { version: 1, repoRoot: snapshot.repoRoot, ref: key, records });
+    await writeJson(file, { version: 1, repoRoot: snapshot.repoRoot, ref: target.key, records });
     const job = path.join(githubDirectory(env), 'jobs', `${randomUUID()}.json`);
-    await writeJson(job, { version: 1, repo, sha: snapshot.head, branch: snapshot.target.ref.replace(/^refs\/heads\//, ''), ...(pull ? { pullRequest: pull.number } : {}), branchFile: file, status, comment });
+    // pullRequest is left out for a push (JSON drops undefined), so the worker looks its pull request up.
+    await writeJson(job, { version: 1, repo: target.repo, sha: snapshot.head, branch: snapshot.target.ref.replace(/^refs\/heads\//, ''), pullRequest: target.pullRequest, branchFile: file, status, comment });
     const child = spawnImpl(process.execPath, [WORKER, job], { env, detached: true, stdio: 'ignore' });
     await new Promise((resolve, reject) => { child.once('error', reject); child.once('spawn', resolve); });
     child.unref();
@@ -146,7 +162,8 @@ export async function scheduleStamp({ snapshot, session, outcome, config, env = 
  * other than the remote's default (from local refs; main and master otherwise).
  */
 export async function pullRequestPush(snapshot) {
-  if (snapshot?.event === 'pre-push' && snapshot.target?.pullRequest) return !!pullRequestRepository(snapshot.target.pullRequest.url);
+  const pull = pullRequestCheck(snapshot);
+  if (pull) return !!pull.repository;
   if (snapshot?.event !== 'pre-push' || !githubRepository(snapshot.target?.url)) return false;
   const branch = String(snapshot.target.ref || '').replace(/^refs\/heads\//, '');
   const remote = snapshot.target.remote;
@@ -232,12 +249,12 @@ export async function pullRequestForBranch({ cwd, env = process.env, gh = ghCli 
   }
   let pull;
   try { pull = JSON.parse(viewed.stdout); } catch { throw new Error('gh pr view returned output Sphinx could not read.'); }
-  const where = pullRequestRepository(pull?.url);
-  if (!where || where.number !== pull.number || !Number.isInteger(pull.number) || typeof pull.baseRefName !== 'string' || !pull.baseRefName || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(pull.headRefOid || '')) {
+  const named = pullRequestRepository(pull?.url);
+  if (!named || named.number !== pull.number || !Number.isInteger(pull.number) || typeof pull.baseRefName !== 'string' || !pull.baseRefName || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(pull.headRefOid || '')) {
     throw new Error('gh pr view returned a pull request without its number, base branch, or head commit.');
   }
   if (pull.state !== 'OPEN') throw new Error(`Pull request #${pull.number} is ${String(pull.state).toLowerCase()}; --pull-request checks open pull requests only.`);
-  return { number: pull.number, url: pull.url, baseRefName: pull.baseRefName, headRefOid: pull.headRefOid, repository: { host: where.host, owner: where.owner, repo: where.repo } };
+  return { number: pull.number, url: pull.url, baseRefName: pull.baseRefName, headRefOid: pull.headRefOid, repository: named.repository };
 }
 
 /** The worker body: wait for the push to land, stamp it, then update the PR comment. */

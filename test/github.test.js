@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestForBranch, pullRequestPush, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -183,6 +183,8 @@ test('a pull request check stamps the pull request it names, in its base reposit
   const env = await home(t), calls = [];
   // Checked from a fork clone: the remote is the fork, the pull request lives upstream, and the destination is main.
   const checked = number => ({ ...snapshot, target: { remote: 'upstream', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/main', pullRequest: { number, url: `https://github.com/upstream-org/widgets/pull/${number}` } } });
+  assert.deepEqual(pullRequestCheck(checked(12)), { number: 12, url: 'https://github.com/upstream-org/widgets/pull/12', repository: { host: 'github.com', owner: 'upstream-org', repo: 'widgets' } });
+  assert.equal(pullRequestCheck(snapshot), null, 'a push names no pull request');
   assert.equal(await pullRequestPush(checked(12)), true, 'the page offers the stamp although the destination is the default branch');
   assert.equal(await scheduleStamp({ snapshot: checked(12), session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
   assert.equal(await scheduleStamp({ snapshot: { ...checked(13), head: 'd'.repeat(40) }, session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
@@ -193,6 +195,8 @@ test('a pull request check stamps the pull request it names, in its base reposit
   assert.deepEqual(JSON.parse(await readFile(first.branchFile, 'utf8')).records.map(record => record.head), [snapshot.head]);
   // A URL that does not name the recorded pull request is not trusted with a stamp.
   const mismatched = { ...checked(12), target: { ...checked(12).target, pullRequest: { number: 12, url: 'https://github.com/upstream-org/widgets/pull/99' } } };
+  assert.equal(pullRequestCheck(mismatched).repository, null);
+  assert.equal(await pullRequestPush(mismatched), false);
   assert.equal(await scheduleStamp({ snapshot: mismatched, session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), false);
   assert.equal(calls.length, 2);
 });

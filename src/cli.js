@@ -465,12 +465,12 @@ async function checkCommand(values) {
 // here, as the Git hook does after a push: the commit status, and the comment when
 // chosen on the page or set in github.comment. Best-effort, like the hook's.
 async function stampPullRequest(id, config, { terminal, post } = {}) {
+  const { pullRequestCheck, scheduleStamp } = await import('./github.js');
   const session = await store.read(id).catch(() => null);
-  const pullRequest = session?.snapshot?.target?.pullRequest;
-  if (!pullRequest || session.status !== 'passed') return false;
-  const { scheduleStamp } = await import('./github.js');
+  const pull = pullRequestCheck(session?.snapshot);
+  if (!pull || session.status !== 'passed') return false;
   const scheduled = await scheduleStamp({ snapshot: session.snapshot, session, outcome: 'passed', config, post });
-  if (scheduled) terminal?.note(`Posting the result to pull request #${pullRequest.number} on GitHub with gh. It appears there in a minute or so.`);
+  if (scheduled) terminal?.note(`Posting the result to pull request #${pull.number} on GitHub with gh. It appears there in a minute or so.`);
   return scheduled;
 }
 
