@@ -27,6 +27,12 @@ export function githubRepository(url) {
   return { host: match[1], owner: match[2], repo: match[3] };
 }
 
+/** owner/repo on a GitHub host, and the number, from a pull request's web URL. */
+export function pullRequestRepository(url) {
+  const match = /^https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\/?$/.exec(String(url || ''));
+  return match ? { host: match[1], owner: match[2], repo: match[3], number: Number(match[4]) } : null;
+}
+
 /** What one check means for the stamp. Never includes private answer keys. */
 export function checkRecord({ session, snapshot, outcome, includeAnswers = false, at = new Date().toISOString() }) {
   const questions = [];
@@ -107,20 +113,27 @@ export function commentBody(records, { stampHead } = {}) {
 export async function scheduleStamp({ snapshot, session, outcome, config, env = process.env, spawnImpl = spawn, post }) {
   try {
     const settings = config.github || {};
-    const repo = githubRepository(snapshot.target.url);
+    // A pull request check (sphinx check --pull-request) names its pull request, which
+    // lives in the base repository; a push only knows the remote it went to.
+    const pull = snapshot.target.pullRequest ? pullRequestRepository(snapshot.target.pullRequest.url) : null;
+    if (snapshot.target.pullRequest && pull?.number !== snapshot.target.pullRequest.number) return false;
+    const repo = pull ? { host: pull.host, owner: pull.owner, repo: pull.repo } : githubRepository(snapshot.target.url);
     if (snapshot.event !== 'pre-push' || !repo) return false;
     // With the Sphinx Action, its check run replaces the commit status and reads the comment.
     const action = await usesSphinxAction(snapshot.repoRoot);
     const comment = typeof post === 'boolean' ? post : action || !!settings.comment;
     const status = !!settings.status && !action;
     if (!status && !comment) return false;
-    const file = branchFile(snapshot.repoRoot, snapshot.target.ref, env);
+    // The comment summarises every check recorded under one key: the pushed branch, or
+    // for a pull request check the pull request, since many share one base branch.
+    const key = pull ? `pull/${repo.owner}/${repo.repo}/${pull.number}` : snapshot.target.ref;
+    const file = branchFile(snapshot.repoRoot, key, env);
     const stored = await readJson(file, null).catch(() => null);
     const record = checkRecord({ session, snapshot, outcome, includeAnswers: !!settings.answers });
     const records = [...(Array.isArray(stored?.records) ? stored.records : []).filter(item => item.head !== record.head), record].slice(-RECORDS_KEPT);
-    await writeJson(file, { version: 1, repoRoot: snapshot.repoRoot, ref: snapshot.target.ref, records });
+    await writeJson(file, { version: 1, repoRoot: snapshot.repoRoot, ref: key, records });
     const job = path.join(githubDirectory(env), 'jobs', `${randomUUID()}.json`);
-    await writeJson(job, { version: 1, repo, sha: snapshot.head, branch: snapshot.target.ref.replace(/^refs\/heads\//, ''), branchFile: file, status, comment });
+    await writeJson(job, { version: 1, repo, sha: snapshot.head, branch: snapshot.target.ref.replace(/^refs\/heads\//, ''), ...(pull ? { pullRequest: pull.number } : {}), branchFile: file, status, comment });
     const child = spawnImpl(process.execPath, [WORKER, job], { env, detached: true, stdio: 'ignore' });
     await new Promise((resolve, reject) => { child.once('error', reject); child.once('spawn', resolve); });
     child.unref();
@@ -133,6 +146,7 @@ export async function scheduleStamp({ snapshot, session, outcome, config, env = 
  * other than the remote's default (from local refs; main and master otherwise).
  */
 export async function pullRequestPush(snapshot) {
+  if (snapshot?.event === 'pre-push' && snapshot.target?.pullRequest) return !!pullRequestRepository(snapshot.target.pullRequest.url);
   if (snapshot?.event !== 'pre-push' || !githubRepository(snapshot.target?.url)) return false;
   const branch = String(snapshot.target.ref || '').replace(/^refs\/heads\//, '');
   const remote = snapshot.target.remote;
@@ -218,12 +232,12 @@ export async function pullRequestForBranch({ cwd, env = process.env, gh = ghCli 
   }
   let pull;
   try { pull = JSON.parse(viewed.stdout); } catch { throw new Error('gh pr view returned output Sphinx could not read.'); }
-  const where = /^https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\/?$/.exec(String(pull?.url || ''));
-  if (!where || !Number.isInteger(pull.number) || typeof pull.baseRefName !== 'string' || !pull.baseRefName || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(pull.headRefOid || '')) {
+  const where = pullRequestRepository(pull?.url);
+  if (!where || where.number !== pull.number || !Number.isInteger(pull.number) || typeof pull.baseRefName !== 'string' || !pull.baseRefName || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(pull.headRefOid || '')) {
     throw new Error('gh pr view returned a pull request without its number, base branch, or head commit.');
   }
   if (pull.state !== 'OPEN') throw new Error(`Pull request #${pull.number} is ${String(pull.state).toLowerCase()}; --pull-request checks open pull requests only.`);
-  return { number: pull.number, url: pull.url, baseRefName: pull.baseRefName, headRefOid: pull.headRefOid, repository: { host: where[1], owner: where[2], repo: where[3] } };
+  return { number: pull.number, url: pull.url, baseRefName: pull.baseRefName, headRefOid: pull.headRefOid, repository: { host: where.host, owner: where.owner, repo: where.repo } };
 }
 
 /** The worker body: wait for the push to land, stamp it, then update the PR comment. */
@@ -246,11 +260,13 @@ export async function runStampJob(job, { gh = ghCli, env = process.env, wait = s
   if (job.status) await postStatus();
   if (!job.comment) return 'done';
 
-  // A pull request is usually opened right after the first push of a branch. From a
-  // fork it lives in the upstream repository, with this fork's owner in its head.
-  const parent = (await api([`repos/${owner}/${repo}`, '--jq', '.parent.full_name // ""'])).stdout?.trim();
-  const places = [`${owner}/${repo}`, ...(parent ? [parent] : [])];
+  // A pull request check already knows its pull request, in the repository it names.
+  // A push looks for it: a pull request is usually opened right after the first push
+  // of a branch. From a fork it lives in the upstream repository, with this fork's owner in its head.
   let pull = null, where = null;
+  if (Number.isInteger(job.pullRequest)) { pull = { number: job.pullRequest }; where = `${owner}/${repo}`; }
+  const parent = pull ? '' : (await api([`repos/${owner}/${repo}`, '--jq', '.parent.full_name // ""'])).stdout?.trim();
+  const places = [`${owner}/${repo}`, ...(parent ? [parent] : [])];
   for (let attempt = 0; attempt < prTries && !pull; attempt++) {
     if (attempt) await wait(prEveryMs);
     for (const place of places) {

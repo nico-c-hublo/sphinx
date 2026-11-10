@@ -445,7 +445,7 @@ async function checkCommand(values) {
         ? 'Resuming the review with no model-call limit. Previous usage remains counted.'
         : `Starting a new review attempt with up to ${config.maxModelCalls} additional model calls, including grading. Previous usage remains counted.`);
     }
-    return runTerminalCheck({
+    const code = await runTerminalCheck({
       store, session: await store.read(session.id), config, ask, terminal, signal, waitingGit, more,
       choose: createPrompts({ ask, ui: terminal }).choose,
       validate: () => validateCheckpoint(session.snapshot, config),
@@ -456,7 +456,22 @@ async function checkCommand(values) {
         await recordOverride({ kind: 'skip', repoRoot: repo.root, target: session.snapshot.target.ref, id: session.id, reason });
       },
     });
+    await stampPullRequest(session.id, config, { terminal });
+    return code;
   }, { controller });
+}
+
+// A pull request check has no push to stamp after it, so a pass stamps its pull request
+// here, as the Git hook does after a push: the commit status, and the comment when
+// chosen on the page or set in github.comment. Best-effort, like the hook's.
+async function stampPullRequest(id, config, { terminal, post } = {}) {
+  const session = await store.read(id).catch(() => null);
+  const pullRequest = session?.snapshot?.target?.pullRequest;
+  if (!pullRequest || session.status !== 'passed') return false;
+  const { scheduleStamp } = await import('./github.js');
+  const scheduled = await scheduleStamp({ snapshot: session.snapshot, session, outcome: 'passed', config, post });
+  if (scheduled) terminal?.note(`Posting the result to pull request #${pullRequest.number} on GitHub with gh. It appears there in a minute or so.`);
+  return scheduled;
 }
 
 // Where a hand-started check asks: --browser or --terminal for this run, otherwise the
@@ -486,7 +501,11 @@ async function browserCheck(session, config, { retry = false } = {}) {
     const request = presentationRequest(session);
     const result = await interview.present({ request });
     if (result.status === 'unavailable') throw unavailable(result.reason);
-    if (result.status === 'passed') { terminal.success('Understanding check complete.'); return 0; }
+    if (result.status === 'passed') {
+      terminal.success('Understanding check complete.');
+      await stampPullRequest(session.id, config, { terminal, post: interview.stampChoice(session.id) });
+      return 0;
+    }
     // The page shows why a check could not finish; say it here too, since the page may be gone.
     const { phase, error } = interview.state || {};
     if (phase === 'error' && error) terminal.warning(error);

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestForBranch, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestForBranch, pullRequestPush, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -177,4 +177,34 @@ test('the pull request of the checked-out branch comes from gh pr view, with rea
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'MERGED', baseRefName: 'main', headRefOid: head }) }).gh }), /Pull request #3 is merged; --pull-request checks open pull requests only\./);
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'OPEN', baseRefName: 'main' }) }).gh }), /without its number, base branch, or head commit/);
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: 'not json' }).gh }), /could not read/);
+});
+
+test('a pull request check stamps the pull request it names, in its base repository, keeping one record set per pull request', async t => {
+  const env = await home(t), calls = [];
+  // Checked from a fork clone: the remote is the fork, the pull request lives upstream, and the destination is main.
+  const checked = number => ({ ...snapshot, target: { remote: 'upstream', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/main', pullRequest: { number, url: `https://github.com/upstream-org/widgets/pull/${number}` } } });
+  assert.equal(await pullRequestPush(checked(12)), true, 'the page offers the stamp although the destination is the default branch');
+  assert.equal(await scheduleStamp({ snapshot: checked(12), session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
+  assert.equal(await scheduleStamp({ snapshot: { ...checked(13), head: 'd'.repeat(40) }, session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
+  const [first, second] = await Promise.all(calls.map(call => readFile(call[1][1], 'utf8').then(JSON.parse)));
+  assert.deepEqual({ ...first, branchFile: undefined }, { version: 1, repo: { host: 'github.com', owner: 'upstream-org', repo: 'widgets' }, sha: snapshot.head, branch: 'main', pullRequest: 12, branchFile: undefined, status: true, comment: false });
+  assert.equal(second.pullRequest, 13);
+  assert.notEqual(first.branchFile, second.branchFile, 'two pull requests into main keep separate comments');
+  assert.deepEqual(JSON.parse(await readFile(first.branchFile, 'utf8')).records.map(record => record.head), [snapshot.head]);
+  // A URL that does not name the recorded pull request is not trusted with a stamp.
+  const mismatched = { ...checked(12), target: { ...checked(12).target, pullRequest: { number: 12, url: 'https://github.com/upstream-org/widgets/pull/99' } } };
+  assert.equal(await scheduleStamp({ snapshot: mismatched, session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), false);
+  assert.equal(calls.length, 2);
+});
+
+test('the stamp job for a pull request check comments on that pull request without searching for one', async t => {
+  const { gh, calls } = fakeGh([[/^auth/, ok()], [/commits\//, ok('sha')], [/statuses\//, ok()], [/^api user/, ok('me\n')],
+    [/upstream-org\/widgets\/issues\/12\/comments --paginate/, ok('')], [/upstream-org\/widgets\/issues\/12\/comments --method POST/, ok('https://github.com/c/12\n')]]);
+  const stampJob = await job(t, { repo: { host: 'github.com', owner: 'upstream-org', repo: 'widgets' }, branch: 'main', pullRequest: 12, comment: true });
+  assert.equal(await runStampJob(stampJob, { gh, wait: async () => {} }), 'done');
+  const commands = calls.map(call => call.args.join(' '));
+  assert.equal(commands.some(command => /pulls\?|\.parent\.full_name/.test(command)), false, 'no pull request lookup by branch');
+  assert.ok(commands.some(command => /repos\/upstream-org\/widgets\/statuses\/b{40} --method POST/.test(command)));
+  const { parseStamp } = await import('../action/index.mjs');
+  assert.equal(parseStamp(calls.find(call => /issues\/12\/comments --method POST/.test(call.args.join(' '))).input.body).head, snapshot.head);
 });

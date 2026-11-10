@@ -270,6 +270,8 @@ After commits, merges, rewrites, and checkouts, Sphinx schedules a detached revi
 
 When you push to GitHub and a check passes, Sphinx marks the pushed commit with a `sphinx/understanding` commit status, for example "Sphinx stamped · 3 questions, 2 first try". It shows next to the commit and in the pull request's checks. A skipped check is marked as a failure ("Understanding check skipped"). Yolo pushes and commit checkpoints are not marked.
 
+A pull request checked with `sphinx check --pull-request` is stamped the same way when you pass, since no push follows it: its head commit gets the commit status, and the comment goes on that pull request, in its base repository. The browser page offers "Post the Sphinx stamp to the pull request" for it, as it does for a push. Each pull request keeps its own comment, even when several share a base branch.
+
 ```json
 { "github": { "status": true, "comment": false, "answers": false } }
 ```

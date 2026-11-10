@@ -388,8 +388,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         : session.snapshot.event === 'pre-commit' ? 'git commit'
         : target.remote && destination ? `git push ${target.remote} ${source && source !== destination ? `${source}:${destination}` : destination}` : 'git push';
       stamp = null;
-      // Only the waiting Git hook posts the stamp, so a check started by hand never offers it.
-      if (waitingGit && await pullRequestPush(session.snapshot).catch(() => false)) {
+      // The waiting Git hook posts the stamp after a push, and sphinx check posts it after a
+      // pull request check (--pull-request). Any other check started by hand never offers it.
+      if ((waitingGit || session.snapshot.target?.pullRequest) && await pullRequestPush(session.snapshot).catch(() => false)) {
         const action = await usesSphinxAction(request.repoRoot).catch(() => false);
         stamp = { post: stampChoices.get(request.id) ?? (action || !!config.github?.comment), action };
         stampChoices.set(request.id, stamp.post);
