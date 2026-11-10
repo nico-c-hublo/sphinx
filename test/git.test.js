@@ -442,3 +442,74 @@ test('a branch that merged other pushed work starts from one of them, and many r
   assert.ok(snapshot.files.includes('child.js'));
   assert.ok(!snapshot.files.includes('base.js'), 'already-checked history is not re-assessed');
 });
+
+// A clone whose origin is named by a GitHub URL, served from a local bare repository,
+// with a feature branch that main moved past after the branch left it.
+async function pullRequestFixture(t) {
+  const cwd = await fixture(t);
+  const remote = await mkdtemp(join(tmpdir(), 'sphinx-pr-remote-'));
+  const other = await mkdtemp(join(tmpdir(), 'sphinx-pr-other-'));
+  t.after(() => Promise.all([rm(remote, { recursive: true, force: true }), rm(other, { recursive: true, force: true })]));
+  const url = 'https://github.com/acme/widgets.git';
+  await command(remote, 'init', '--bare', '-b', 'main');
+  await command(cwd, 'config', `url.${remote}.insteadOf`, url);
+  await command(cwd, 'remote', 'add', 'origin', url);
+  const forked = await commit(cwd, { 'shared.txt': 'shared\n' });
+  await command(cwd, 'push', 'origin', 'main');
+  await command(cwd, 'switch', '-c', 'feature');
+  const head = await commit(cwd, { 'feature.txt': 'feature\n' });
+  await command(cwd, 'push', '--set-upstream', 'origin', 'feature');
+  // Someone else merges to main afterwards; this clone has not fetched it.
+  await command(other, 'clone', '-q', remote, '.');
+  await command(other, 'config', 'user.name', 'Other'); await command(other, 'config', 'user.email', 'other@example.invalid');
+  const later = await commit(other, { 'later.txt': 'later\n', 'shared.txt': 'shared, edited on main\n' });
+  await command(other, 'push', 'origin', 'main');
+  const pullRequest = (changes = {}) => ({ number: 7, url: 'https://github.com/acme/widgets/pull/7', baseRefName: 'main', headRefOid: head, repository: { host: 'github.com', owner: 'acme', repo: 'widgets' }, ...changes });
+  return { cwd, remote, other, forked, head, later, pullRequest };
+}
+
+test('a pull request check covers the range the pull request shows, not the base branch it fell behind', async t => {
+  const f = await pullRequestFixture(t);
+  const snapshot = await manualSnapshot({ cwd: f.cwd, config: defaults, pullRequest: f.pullRequest() });
+  assert.deepEqual(snapshot.files, ['feature.txt'], 'commits merged to main since are not changes of this branch');
+  assert.equal(snapshot.base, f.forked);
+  assert.equal(snapshot.head, f.head);
+  assert.deepEqual(snapshot.target, { remote: 'origin', url: f.remote, ref: 'refs/heads/main', pullRequest: { number: 7, url: 'https://github.com/acme/widgets/pull/7' } });
+  assert.equal(snapshot.sourceRef, 'refs/heads/feature');
+  assert.equal(await command(f.cwd, 'cat-file', '-t', f.later), 'commit', 'the base branch history was fetched for the merge base');
+  assert.equal(await revalidateSnapshot(snapshot, defaults), true);
+
+  // Without --pull-request nothing changes: a manual push check compares with the
+  // destination's current tip, the range a push sends, and is a different checkpoint.
+  const manual = await manualSnapshot({ cwd: f.cwd, config: defaults, branch: 'main' });
+  assert.equal(manual.base, f.later);
+  assert.deepEqual(manual.files, ['feature.txt', 'later.txt', 'shared.txt']);
+  assert.equal(Object.hasOwn(manual.target, 'pullRequest'), false);
+  assert.notEqual(manual.id, snapshot.id);
+});
+
+test('a pull request check takes its destination from the pull request base and still follows the branch policy', async t => {
+  const f = await pullRequestFixture(t);
+  await command(f.cwd, 'push', 'origin', `${f.forked}:refs/heads/release`);
+  const pullRequest = f.pullRequest({ baseRefName: 'release' });
+  assert.equal(await manualSnapshot({ cwd: f.cwd, config: defaults, pullRequest }), null, 'release is not a checked branch by default');
+  const snapshot = await manualSnapshot({ cwd: f.cwd, config: { ...defaults, branches: ['main', 'release'] }, pullRequest });
+  assert.equal(snapshot.target.ref, 'refs/heads/release');
+  assert.deepEqual(snapshot.files, ['feature.txt']);
+});
+
+test('a pull request check refuses a HEAD that is not the pull request head, and a remote outside its base repository', async t => {
+  const f = await pullRequestFixture(t);
+  const check = changes => manualSnapshot({ cwd: f.cwd, config: defaults, ...changes });
+  await assert.rejects(check({ pullRequest: f.pullRequest({ headRefOid: f.forked }) }), /HEAD \([a-f0-9]{12}\) is not the head of pull request #7 \([a-f0-9]{12}\)\. Pull or push/);
+  await assert.rejects(check({ pullRequest: f.pullRequest({ repository: { host: 'github.com', owner: 'upstream-org', repo: 'widgets' } }) }), /No remote points at upstream-org\/widgets, the base repository of pull request #7\. Add one, or choose it with --remote\./);
+  await assert.rejects(check({ remote: 'missing', pullRequest: f.pullRequest() }), /Remote missing does not point at acme\/widgets/);
+  await assert.rejects(check({ config: { ...defaults, branches: ['*'] }, pullRequest: f.pullRequest({ baseRefName: 'gone' }) }), /The base branch gone of pull request #7 is not on origin\./);
+
+  // A pull request from a fork: the branch tracks the fork, the base lives upstream.
+  await command(f.cwd, 'remote', 'rename', 'origin', 'upstream');
+  await command(f.cwd, 'remote', 'add', 'origin', 'https://github.com/someone/widgets.git');
+  const snapshot = await check({ pullRequest: f.pullRequest() });
+  assert.equal(snapshot.target.remote, 'upstream');
+  assert.deepEqual(snapshot.files, ['feature.txt']);
+});

@@ -187,19 +187,43 @@ export async function usesSphinxAction(repoRoot) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/** gh with an optional JSON body on stdin. Resolves { ok, stdout }; never rejects. */
-export function ghCli(args, { env = process.env, host, input, timeoutMs = 30000 } = {}) {
+/** gh with an optional JSON body on stdin. Resolves { ok, stdout, stderr, missing }; never rejects. */
+export function ghCli(args, { env = process.env, host, input, cwd, timeoutMs = 30000 } = {}) {
   return new Promise(resolve => {
-    let child, stdout = '';
-    try { child = spawn('gh', args, { env: { ...env, GH_HOST: host, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' }, stdio: ['pipe', 'pipe', 'ignore'] }); }
-    catch { resolve({ ok: false, stdout: '' }); return; }
+    let child, stdout = '', stderr = '';
+    try { child = spawn('gh', args, { cwd, env: { ...env, GH_HOST: host, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' }, stdio: ['pipe', 'pipe', 'pipe'] }); }
+    catch { resolve({ ok: false, stdout: '', stderr: '', missing: true }); return; }
     const timer = setTimeout(() => child.kill(), timeoutMs);
     child.stdout.on('data', chunk => { if (stdout.length < 4 * 1024 * 1024) stdout += chunk; });
-    child.once('error', () => { clearTimeout(timer); resolve({ ok: false, stdout: '' }); });
-    child.once('close', code => { clearTimeout(timer); resolve({ ok: code === 0, stdout }); });
+    child.stderr.on('data', chunk => { if (stderr.length < 64 * 1024) stderr += chunk; });
+    child.once('error', error => { clearTimeout(timer); resolve({ ok: false, stdout: '', stderr, missing: error.code === 'ENOENT' }); });
+    child.once('close', code => { clearTimeout(timer); resolve({ ok: code === 0, stdout, stderr, missing: false }); });
     child.stdin.on('error', () => {});
     child.stdin.end(input === undefined ? '' : JSON.stringify(input));
   });
+}
+
+/**
+ * The open pull request for the checked-out branch, as gh resolves it: its number,
+ * base branch, head commit, and the repository that holds it (the base repository,
+ * which for a pull request from a fork is not the fork). Throws with a reason a
+ * person can act on; nothing here calls a model.
+ */
+export async function pullRequestForBranch({ cwd, env = process.env, gh = ghCli } = {}) {
+  const viewed = await gh(['pr', 'view', '--json', 'number,url,state,baseRefName,headRefOid'], { env, cwd });
+  if (viewed.missing) throw new Error('--pull-request needs the GitHub CLI (gh). Install it and sign in with gh auth login, then retry.');
+  if (!viewed.ok) {
+    const reason = String(viewed.stderr || '').trim().split('\n').find(Boolean) || 'gh pr view failed';
+    throw new Error(`No pull request found for the checked-out branch: ${reason}`);
+  }
+  let pull;
+  try { pull = JSON.parse(viewed.stdout); } catch { throw new Error('gh pr view returned output Sphinx could not read.'); }
+  const where = /^https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\/?$/.exec(String(pull?.url || ''));
+  if (!where || !Number.isInteger(pull.number) || typeof pull.baseRefName !== 'string' || !pull.baseRefName || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(pull.headRefOid || '')) {
+    throw new Error('gh pr view returned a pull request without its number, base branch, or head commit.');
+  }
+  if (pull.state !== 'OPEN') throw new Error(`Pull request #${pull.number} is ${String(pull.state).toLowerCase()}; --pull-request checks open pull requests only.`);
+  return { number: pull.number, url: pull.url, baseRefName: pull.baseRefName, headRefOid: pull.headRefOid, repository: { host: where[1], owner: where[2], repo: where[3] } };
 }
 
 /** The worker body: wait for the push to land, stamp it, then update the PR comment. */

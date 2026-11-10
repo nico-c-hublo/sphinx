@@ -207,6 +207,8 @@ If both `.sphinxconfig` and legacy `.sphinx.json` exist, `.sphinxconfig` wins an
 
 **Manual push checks.** `sphinx check --remote origin --branch main` selects the destination; otherwise Sphinx uses the upstream. Multiple destination refs are assessed separately. Tag-only pushes and deletions do not trigger checks in v0.1.
 
+**Pull request checks.** `sphinx check --pull-request` checks the open pull request of the checked-out branch, as GitHub shows it. The GitHub CLI (`gh`) finds the pull request; its base branch is the destination, and the change runs from where the branch left that base (their merge base). A manual push check instead compares with the destination's current tip, which is what a push sends, so on a branch that has fallen behind it would also count the commits merged since as changes the branch undoes. `HEAD` must be the pull request's head commit, the remote is the one that holds the base repository (`--remote` chooses among several), and the base branch must match the `branches` policy. The check names the pull request, so it never stands in for a push: pushing the same commits is assessed against its own range.
+
 **Pull request branches.** Set `"branches": ["*"]` to check pushes to every branch. The first push of a new branch is checked from where it left the remote's default branch (the same range the pull request shows), using local remote-tracking refs; later pushes check only the new commits.
 
 ## Project context

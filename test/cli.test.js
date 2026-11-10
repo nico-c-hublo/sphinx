@@ -702,3 +702,45 @@ test('a documentation-only push goes through with no questionnaire and no model 
   assert.match(pushed.stderr, /documentation-only change to refs\/heads\/main; no questions needed/);
   assert.equal((await f.calls()).length, before, 'No model was called');
 });
+
+test('check --pull-request checks what the pull request shows, from where the branch left its base, and refuses what it cannot check', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const url = 'https://github.com/acme/widgets.git';
+  f.git('config', `url.${f.bare}.insteadOf`, url); f.git('remote', 'set-url', 'origin', url);
+  f.git('push', '-q', 'origin', 'main');
+  f.git('switch', '-qc', 'feature');
+  await writeFile(path.join(f.repo, 'app.js'), `${f.app}export const size = () => seen.size;\n`);
+  f.git('commit', '-qam', 'Count queued IDs'); f.git('push', '-q', '--set-upstream', 'origin', 'feature');
+  const head = f.git('rev-parse', 'HEAD');
+  // main moves on after the branch left it; this clone has not fetched it.
+  const other = path.join(f.base, 'other');
+  f.ok('git', ['clone', '-q', '-b', 'main', f.bare, other]);
+  await writeFile(path.join(other, 'later.js'), 'export const later = true;\n');
+  f.ok('git', ['add', 'later.js'], { cwd: other }); f.ok('git', ['-c', 'user.name=Other', '-c', 'user.email=other@example.test', 'commit', '-qm', 'Merged elsewhere'], { cwd: other }); f.ok('git', ['push', '-q', 'origin', 'main'], { cwd: other });
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  // gh answers from the environment, so each run can describe its own pull request.
+  await writeFile(path.join(f.base, 'bin', 'gh'), '#!/bin/sh\n[ -n "$SPHINX_TEST_GH_ERROR" ] && { echo "$SPHINX_TEST_GH_ERROR" >&2; exit 1; }\nprintf "%s" "$SPHINX_TEST_GH"\n', { mode: 0o755 });
+  const pull = changes => JSON.stringify({ number: 12, url: 'https://github.com/acme/widgets/pull/12', state: 'OPEN', baseRefName: 'main', headRefOid: head, ...changes });
+  const check = (env, ...args) => f.run(process.execPath, [CLI, 'check', '--pull-request', ...args], { env: { ...f.env, ...env } });
+
+  const combined = check({ SPHINX_TEST_GH: pull() }, '--branch', 'main', '--json');
+  assert.equal(combined.status, 1);
+  assert.match(combined.stderr, /--pull-request\s+takes\s+the\s+destination\s+from\s+the\s+pull\s+request\s+and\s+cannot\s+be\s+combined\s+with\s+--branch/);
+  const none = check({ SPHINX_TEST_GH_ERROR: 'no pull requests found for branch "feature"' }, '--json');
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /No\s+pull\s+request\s+found\s+for\s+the\s+checked-out\s+branch:\s+no\s+pull\s+requests\s+found\s+for\s+branch\s+"feature"/);
+  const stale = check({ SPHINX_TEST_GH: pull({ headRefOid: 'f'.repeat(40) }) }, '--json');
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /is\s+not\s+the\s+head\s+of\s+pull\s+request\s+#12/);
+  assert.deepEqual(await f.calls(), [], 'nothing is reviewed before the pull request is known');
+
+  const started = check({ SPHINX_TEST_GH: pull() }, '--json');
+  assert.equal(started.status, 0, started.stderr);
+  const session = JSON.parse(started.stdout);
+  assert.equal(session.status, 'active');
+  const reviewed = JSON.stringify(await f.calls());
+  assert.match(reviewed, /app\.js/);
+  assert.doesNotMatch(reviewed, /later\.js/, 'commits merged to main since the branch left it are not part of the check');
+  const [pending] = f.cliJson('pending').filter(item => item.id === session.id);
+  assert.equal(pending.target, 'refs/heads/main');
+});

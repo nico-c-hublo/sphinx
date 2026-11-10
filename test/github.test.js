@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestForBranch, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -159,4 +159,22 @@ test('the workflow template pins the Action to the release tag, never runs pull 
   assert.match(text, /\npermissions:\n {2}checks: write\n {2}pull-requests: read\n {2}issues: read\n(?! )/);
   assert.match(text, /\n {2}cancel-in-progress: false\n/, 'a comment must not cancel a run that has already started');
   assert.doesNotMatch(text, /checkout|\brun:/, 'it never checks out or runs pull request code');
+});
+
+test('the pull request of the checked-out branch comes from gh pr view, with reasons a person can act on', async () => {
+  const head = 'c'.repeat(40);
+  const reply = result => { const calls = []; return { calls, gh: async (args, options) => { calls.push({ args, options }); return { stderr: '', missing: false, ...result }; } }; };
+  const open = reply({ ok: true, stdout: JSON.stringify({ number: 24107, url: 'https://github.com/acme/widgets/pull/24107', state: 'OPEN', baseRefName: 'release/1.2', headRefOid: head }) });
+  assert.deepEqual(await pullRequestForBranch({ cwd: '/repo', gh: open.gh }), {
+    number: 24107, url: 'https://github.com/acme/widgets/pull/24107', baseRefName: 'release/1.2', headRefOid: head,
+    repository: { host: 'github.com', owner: 'acme', repo: 'widgets' },
+  });
+  assert.deepEqual(open.calls[0].args, ['pr', 'view', '--json', 'number,url,state,baseRefName,headRefOid']);
+  assert.equal(open.calls[0].options.cwd, '/repo');
+
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: false, missing: true }).gh }), /needs the GitHub CLI \(gh\)\. Install it and sign in with gh auth login/);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: false, stderr: 'no pull requests found for branch "feature"\n' }).gh }), /No pull request found for the checked-out branch: no pull requests found for branch "feature"/);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'MERGED', baseRefName: 'main', headRefOid: head }) }).gh }), /Pull request #3 is merged; --pull-request checks open pull requests only\./);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'OPEN', baseRefName: 'main' }) }).gh }), /without its number, base branch, or head commit/);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: 'not json' }).gh }), /could not read/);
 });
