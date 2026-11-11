@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -743,4 +743,12 @@ test('check --pull-request checks what the pull request shows, from where the br
   assert.doesNotMatch(reviewed, /later\.js/, 'commits merged to main since the branch left it are not part of the check');
   const [pending] = f.cliJson('pending').filter(item => item.id === session.id);
   assert.equal(pending.target, 'refs/heads/main');
+
+  // No push follows a pull request check, so the answer that passes it stamps the pull request.
+  const passed = f.cliJson('answer', session.id, '--text', 'No. The set already contains the ID and the function returns false.');
+  assert.equal(passed.status, 'passed');
+  const branches = path.join(f.env.SPHINX_HOME, 'github', 'branches');
+  const recorded = await Promise.all((await readdir(branches)).map(async name => JSON.parse(await readFile(path.join(branches, name), 'utf8'))));
+  assert.deepEqual(recorded.map(item => item.ref), ['pull/acme/widgets/12']);
+  assert.deepEqual(recorded[0].records.map(item => item.head), [head]);
 });

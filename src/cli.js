@@ -699,6 +699,10 @@ export async function main(argv) {
     if (existing.snapshot.repoRoot !== repo.root) throw new Error('This checkpoint belongs to a different repository.');
     const learn = command === 'explain', dispute = command === 'dispute';
     const result = await withProgress(learn ? 'Preparing an explanation' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(id, learn ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : values.text, config, { learn, dispute }), { enabled: !values.json });
-    if (values.json) json(result); else printSession(result); return 0;
+    if (values.json) json(result); else printSession(result);
+    // A pull request check has no push to stamp after it, so the answer that passes it
+    // stamps it, as the page and the terminal check do. A repeat answer stamps nothing new.
+    if (existing.status !== 'passed' && result.status === 'passed') await stampPullRequest(id, config, values.json ? {} : { terminal: ui() });
+    return 0;
   }
 }
