@@ -325,9 +325,19 @@ test('a reinstall never chains to an unrecorded Sphinx hooks folder, so pass-thr
   await executable(path.join(f.repo, '.git', 'hooks', 'post-checkout'), '#!/bin/sh\nprintf ran > "$SPHINX_TEST_OUTPUT"\n');
   execFileSync(path.join(hookDir, 'post-checkout'), [], { cwd: f.repo, env: { ...f.env, SPHINX_TEST_OUTPUT: output, SPHINX_EVALUATOR: '1' }, timeout: 5000 });
   assert.equal(await readFile(output, 'utf8'), 'ran');
-  // Uninstall is reversible: the setting found before installation comes back.
-  await uninstall(f.options);
+  // Uninstall is reversible: the setting found before installation comes back, with a warning that it is gone.
+  const removal = await uninstall(f.options);
   assert.equal(f.git('config', '--global', '--get', 'core.hooksPath'), hookDir);
+  assert.match(removal.warnings.join('\n'), /no longer exists, so Git runs no hooks/);
+});
+
+test('a repository install that inherits an orphaned global hooks folder says the global setting still names it', async t => {
+  const f = await fixture(t);
+  f.git('config', '--global', 'core.hooksPath', path.join(f.paths.home, 'hooks', 'global'));
+  const result = await install({ ...f.options, repo: true });
+  assert.match(result.warnings.join('\n'), /global core\.hooksPath still names that folder; run sphinx install without --repo/);
+  const removal = await uninstall({ ...f.options, repo: true });
+  assert.doesNotMatch(removal.warnings.join('\n'), /no longer exists/);
 });
 
 test('a recorded Sphinx hooks folder reached through a symlink is inherited, not taken for an orphan', async t => {

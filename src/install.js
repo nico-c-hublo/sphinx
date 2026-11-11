@@ -291,7 +291,11 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
     const { source, orphaned } = await sourceBeforeInstall({ repo, cwd, env, paths, manifest });
     // Only the chain source changes for an orphaned folder. previousValues keeps the
     // original setting, so uninstall still restores exactly what was there before.
-    if (orphaned) warnings.push(`core.hooksPath pointed at a Sphinx hooks folder no install records (${orphaned}); existing hooks now chain from Git's default hooks folder. Uninstall restores the original setting.`);
+    if (orphaned) {
+      // A repository install can inherit the orphan from the global setting, which it leaves as it is.
+      const global = repo && orphaned === await git(['config', '--global', '--includes', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
+      warnings.push(`core.hooksPath pointed at a Sphinx hooks folder no install records (${orphaned}); existing hooks now chain from Git's default hooks folder. Uninstall restores the original setting.${global ? ' The global core.hooksPath still names that folder; run sphinx install without --repo to repair it.' : ''}`);
+    }
     entry = { id, scope: info.scope, root: info.root, hookDir: path.join(paths.home, 'hooks', id), previousValues: scopeValues, source, files: {} };
   }
   const directoryState = await lstat(entry.hookDir).catch(error => {
@@ -365,7 +369,8 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
   const entry = manifest.installs[id];
   if (entry) {
     const values = await currentConfig(entry.scope, cwd, env);
-    if (values.length === 1 && values[0] === entry.hookDir) {
+    const restored = values.length === 1 && values[0] === entry.hookDir;
+    if (restored) {
       await git(['config', entry.scope, '--unset-all', 'core.hooksPath'], cwd, env, [0, 5]);
       for (const value of entry.previousValues) await git(['config', entry.scope, '--add', 'core.hooksPath', value], cwd, env);
     } else warnings.push('Git core.hooksPath changed after installation; the current setting was preserved.');
@@ -386,6 +391,14 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
       else warnings.push(`Preserved edited hook: ${file}`);
     }
     await rmdir(entry.hookDir).catch(() => {});
+    // Uninstall stays reversible, but a restored folder that is gone disables every hook.
+    if (restored && entry.previousValues.length) {
+      const base = await hooksPathBase(cwd, env);
+      const output = await git(['config', entry.scope, '--null', '--path', '--get-all', 'core.hooksPath'], cwd, env, [0, 1]);
+      for (const value of output ? output.replace(/\0$/, '').split('\0') : []) {
+        if (!await exists(path.resolve(base, value))) warnings.push(`Restored core.hooksPath to ${value}, its setting before installation, but that folder no longer exists, so Git runs no hooks. If nothing else needs it, remove it with: git config ${entry.scope} --unset-all core.hooksPath`);
+      }
+    }
     delete manifest.installs[id];
     messages.push(`Removed ${repo ? 'repository' : 'global'} Git integration.`);
   } else messages.push(`No ${repo ? 'repository' : 'global'} Git integration was installed.`);
