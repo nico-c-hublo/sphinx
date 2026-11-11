@@ -488,6 +488,22 @@ test('a pull request check covers the range the pull request shows, not the base
   assert.notEqual(manual.id, snapshot.id);
 });
 
+test('a pull request check in a shallow clone fetches the history it needs to find where the branch left its base', async t => {
+  const f = await pullRequestFixture(t);
+  // CI-style clones: only the branch, or every branch, one commit deep. Neither reaches the fork point.
+  for (const args of [['--branch', 'feature'], ['--no-single-branch', '--branch', 'feature']]) {
+    const cwd = await mkdtemp(join(tmpdir(), 'sphinx-pr-shallow-'));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    await command(cwd, 'clone', '-q', '--depth', '1', ...args, `file://${f.remote}`, '.');
+    await command(cwd, 'config', `url.file://${f.remote}.insteadOf`, 'https://github.com/acme/widgets.git');
+    await command(cwd, 'remote', 'set-url', 'origin', 'https://github.com/acme/widgets.git');
+    assert.equal(await command(cwd, 'rev-parse', '--is-shallow-repository'), 'true');
+    const snapshot = await manualSnapshot({ cwd, config: defaults, pullRequest: f.pullRequest() });
+    assert.equal(snapshot.base, f.forked, `clone ${args.join(' ')}`);
+    assert.deepEqual(snapshot.files, ['feature.txt']);
+  }
+});
+
 test('a pull request check takes its destination from the pull request base and still follows the branch policy', async t => {
   const f = await pullRequestFixture(t);
   await command(f.cwd, 'push', 'origin', `${f.forked}:refs/heads/release`);

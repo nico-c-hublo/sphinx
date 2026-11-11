@@ -301,7 +301,16 @@ async function pullRequestSnapshot({ repo, localRef, upstreamRemote, remote: cho
     await git(root, ['fetch', '--quiet', '--no-tags', '--', remote, ref], { timeout: 300000 });
   }
   await ensureCommit(root, tip, remote, true);
-  const base = (await git(root, ['merge-base', tip, head], { allowFailure: true }))?.trim();
+  const mergeBase = async () => (await git(root, ['merge-base', tip, head], { allowFailure: true }))?.trim();
+  let base = await mergeBase();
+  // A shallow clone (as CI makes) can stop short of where the branch left its base,
+  // so no merge base shows. Fetch the rest of the history once and look again.
+  if (!base && (await git(root, ['rev-parse', '--is-shallow-repository'])).trim() === 'true') {
+    if (await git(root, ['fetch', '--quiet', '--no-tags', '--unshallow', '--', remote, ref], { timeout: 300000, allowFailure: true }) === null) {
+      throw new Error(`This clone is shallow, and Sphinx could not fetch the history it needs to find where the branch left ${remote}/${pullRequest.baseRefName}. Run git fetch --unshallow ${remote}, then retry.`);
+    }
+    base = await mergeBase();
+  }
   if (!base) throw new Error(`HEAD shares no history with ${remote}/${pullRequest.baseRefName}, the base of pull request #${number}.`);
   return pushSnapshot({ repo, remote, remoteUrl, localRef: localRef || 'HEAD', head, ref, base, config, env, pullRequest: { number, url: pullRequest.url } });
 }
