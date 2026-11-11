@@ -464,7 +464,11 @@ async function pullRequestFixture(t) {
   await command(other, 'config', 'user.name', 'Other'); await command(other, 'config', 'user.email', 'other@example.invalid');
   const later = await commit(other, { 'later.txt': 'later\n', 'shared.txt': 'shared, edited on main\n' });
   await command(other, 'push', 'origin', 'main');
-  const pullRequest = (changes = {}) => ({ number: 7, url: 'https://github.com/acme/widgets/pull/7', baseRefName: 'main', headRefOid: head, repository: { host: 'github.com', owner: 'acme', repo: 'widgets' }, ...changes });
+  // As the host integration hands it over: which remote URLs name the base repository is its call.
+  const pullRequest = (changes = {}) => {
+    const pull = { number: 7, url: 'https://github.com/acme/widgets/pull/7', baseRefName: 'main', headRefOid: head, repository: { host: 'github.com', owner: 'acme', repo: 'widgets' }, ...changes };
+    return { ...pull, pointsAtBase: remoteUrl => remoteUrl === `https://github.com/${pull.repository.owner}/${pull.repository.repo}.git` };
+  };
   return { cwd, remote, other, forked, head, later, pullRequest };
 }
 

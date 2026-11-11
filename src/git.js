@@ -4,7 +4,6 @@ import { realpath } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { policyHash } from './config.js';
-import { githubRepository } from './github.js';
 import { loadIgnorePolicy } from './ignore.js';
 import { loadProjectContext } from './repo-context.js';
 
@@ -261,8 +260,6 @@ async function pushSnapshot({ repo, remote, remoteUrl, localRef, head, ref, base
   return buildSnapshot({ repo, event: 'pre-push', target, base, head, tree, sourceRef, config, env });
 }
 
-const sameRepository = (a, b) => !!a && !!b && [a.host, a.owner, a.repo].join('/').toLowerCase() === [b.host, b.owner, b.repo].join('/').toLowerCase();
-
 // A pull request checked after the fact: HEAD from where it left the pull request's
 // base branch (their merge base), the range the pull request itself shows. The
 // base branch's current tip would also count the commits that reached it since as
@@ -278,13 +275,14 @@ async function pullRequestSnapshot({ repo, localRef, upstreamRemote, remote: cho
   }
   // The remote that holds the pull request's base repository: for a pull request
   // from a fork, that is the upstream repository, not the fork the branch tracks.
+  // The host integration that found the pull request says which remote URLs name it.
   const { owner, repo: name } = pullRequest.repository;
   const names = (await git(root, ['remote'])).split('\n').filter(Boolean);
   const candidates = chosen ? [chosen] : [...new Set([upstreamRemote, 'origin', ...names])].filter(item => item && names.includes(item));
   let remote = null;
   for (const candidate of candidates) {
     const url = (await git(root, ['config', '--get', `remote.${candidate}.url`], { allowFailure: true }))?.trim();
-    if (sameRepository(githubRepository(url), pullRequest.repository)) { remote = candidate; break; }
+    if (url && pullRequest.pointsAtBase(url)) { remote = candidate; break; }
   }
   if (!remote) {
     throw new Error(chosen

@@ -27,6 +27,8 @@ export function githubRepository(url) {
   return { host: match[1], owner: match[2], repo: match[3] };
 }
 
+const sameRepository = (a, b) => !!a && !!b && [a.host, a.owner, a.repo].join('/').toLowerCase() === [b.host, b.owner, b.repo].join('/').toLowerCase();
+
 /** The repository (owner/repo on a GitHub host) and the number from a pull request's web URL. */
 export function pullRequestRepository(url) {
   const match = /^https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\/?$/.exec(String(url || ''));
@@ -237,8 +239,9 @@ export function ghCli(args, { env = process.env, host, input, cwd, timeoutMs = 3
 /**
  * The open pull request for the checked-out branch, as gh resolves it: its number,
  * base branch, head commit, and the repository that holds it (the base repository,
- * which for a pull request from a fork is not the fork). Throws with a reason a
- * person can act on; nothing here calls a model.
+ * which for a pull request from a fork is not the fork), with pointsAtBase(url) to
+ * tell which remote holds it, so the Git engine needs no GitHub knowledge. Throws
+ * with a reason a person can act on; nothing here calls a model.
  */
 export async function pullRequestForBranch({ cwd, env = process.env, gh = ghCli } = {}) {
   const viewed = await gh(['pr', 'view', '--json', 'number,url,state,baseRefName,headRefOid'], { env, cwd });
@@ -254,7 +257,8 @@ export async function pullRequestForBranch({ cwd, env = process.env, gh = ghCli 
     throw new Error('gh pr view returned a pull request without its number, base branch, or head commit.');
   }
   if (pull.state !== 'OPEN') throw new Error(`Pull request #${pull.number} is ${String(pull.state).toLowerCase()}; --pull-request checks open pull requests only.`);
-  return { number: pull.number, url: pull.url, baseRefName: pull.baseRefName, headRefOid: pull.headRefOid, repository: named.repository };
+  const { repository } = named;
+  return { number: pull.number, url: pull.url, baseRefName: pull.baseRefName, headRefOid: pull.headRefOid, repository, pointsAtBase: url => sameRepository(githubRepository(url), repository) };
 }
 
 /** The worker body: wait for the push to land, stamp it, then update the PR comment. */

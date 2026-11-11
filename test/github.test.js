@@ -165,10 +165,14 @@ test('the pull request of the checked-out branch comes from gh pr view, with rea
   const head = 'c'.repeat(40);
   const reply = result => { const calls = []; return { calls, gh: async (args, options) => { calls.push({ args, options }); return { stderr: '', missing: false, ...result }; } }; };
   const open = reply({ ok: true, stdout: JSON.stringify({ number: 24107, url: 'https://github.com/acme/widgets/pull/24107', state: 'OPEN', baseRefName: 'release/1.2', headRefOid: head }) });
-  assert.deepEqual(await pullRequestForBranch({ cwd: '/repo', gh: open.gh }), {
+  const { pointsAtBase, ...pull } = await pullRequestForBranch({ cwd: '/repo', gh: open.gh });
+  assert.deepEqual(pull, {
     number: 24107, url: 'https://github.com/acme/widgets/pull/24107', baseRefName: 'release/1.2', headRefOid: head,
     repository: { host: 'github.com', owner: 'acme', repo: 'widgets' },
   });
+  // It tells the Git engine which remotes hold the base repository, in any URL form.
+  for (const url of ['https://github.com/acme/widgets.git', 'git@github.com:Acme/Widgets.git', 'ssh://git@github.com/acme/widgets']) assert.equal(pointsAtBase(url), true, url);
+  for (const url of ['https://github.com/someone/widgets.git', 'https://gitlab.com/acme/widgets.git', '/srv/git/widgets.git']) assert.equal(pointsAtBase(url), false, url);
   assert.deepEqual(open.calls[0].args, ['pr', 'view', '--json', 'number,url,state,baseRefName,headRefOid']);
   assert.equal(open.calls[0].options.cwd, '/repo');
 
