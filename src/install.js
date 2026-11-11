@@ -489,7 +489,7 @@ export async function dispatchHook({ event, args = [], input = '', cwd = process
   let entry = manifest.installs[env.SPHINX_INSTALL_ID];
   if (!entry) {
     const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-    entry = Object.values(manifest.installs).find(item => item.hookDir === effective);
+    entry = await installForFolder(await hooksPathResolver(cwd, env)(effective), manifest);
   }
   if (!entry) throw new Error('Sphinx hook installation is missing. Run sphinx install to repair it.');
   if (Number(env.SPHINX_HOOK_DEPTH || 0) > 0) throw new Error('Recursive Sphinx Git hook detected. Run sphinx doctor and repair the hook chain.');
@@ -518,12 +518,13 @@ export async function doctor({ env = process.env, cwd = process.cwd() } = {}) {
   const { paths, manifest } = await manifestFor(env);
   const checks = [];
   const global = manifest.installs.global;
+  const resolveHooksPath = hooksPathResolver(cwd, env);
   const globalValue = await git(['config', '--global', '--includes', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-  checks.push({ name: 'Global Git hooks', ok: !!global && globalValue === global.hookDir, detail: globalValue || 'Not installed' });
+  checks.push({ name: 'Global Git hooks', ok: !!global && await installForFolder(await resolveHooksPath(globalValue), manifest) === global, detail: globalValue || 'Not installed' });
   try {
     await git(['rev-parse', '--git-dir'], cwd, env);
     const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-    const entry = Object.values(manifest.installs).find(item => item.hookDir === effective);
+    const entry = await installForFolder(await resolveHooksPath(effective), manifest);
     checks.push({ name: 'Current repository', ok: !!entry, detail: entry ? `Sphinx active: ${effective}` : 'Not covered. A local, worktree, or conditional override may require sphinx install --repo.' });
     if (entry) {
       for (const name of [...GATED, ...PREPARED]) {

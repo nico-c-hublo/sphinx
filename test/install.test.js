@@ -391,6 +391,19 @@ test('the recorded hooks folder spelled through a symlink still counts as Sphinx
   assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
 });
 
+test('doctor and the hook fallback find the recorded hooks folder spelled through a symlink', async t => {
+  const f = await fixture(t);
+  await install(f.options);
+  const alias = path.join(f.base, 'hooks-alias');
+  await symlink(path.join(f.paths.home, 'hooks'), alias);
+  f.git('config', '--global', 'core.hooksPath', path.join(alias, 'global'));
+  const checks = (await doctor(f.options)).checks;
+  assert.equal(checks.find(check => check.name === 'Global Git hooks').ok, true);
+  assert.equal(checks.find(check => check.name === 'Current repository').ok, true);
+  // Without an install id, a hook finds its install from core.hooksPath.
+  assert.equal(await dispatchHook({ event: 'post-checkout', cwd: f.repo, env: f.env, gate: async () => 1 }), 0);
+});
+
 test('the recorded hooks folder spelled with ~ still counts as Sphinx-owned on reinstall and uninstall', async t => {
   const f = await fixture(t);
   await install(f.options);
