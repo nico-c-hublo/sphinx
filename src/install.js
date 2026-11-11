@@ -276,11 +276,10 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
   let entry = previous;
   if (!entry) {
     const { source, orphaned } = await sourceBeforeInstall({ repo, cwd, env, paths, manifest });
-    // An orphaned Sphinx folder is not restored on uninstall either: its hooks are gone by then.
-    const previousValues = [];
-    for (const value of scopeValues) if (!await orphanedSphinxHookDir(value, { cwd, paths, manifest })) previousValues.push(value);
-    if (orphaned) warnings.push(`core.hooksPath pointed at a Sphinx hooks folder no install records (${orphaned}); existing hooks now chain from Git's default hooks folder.`);
-    entry = { id, scope: info.scope, root: info.root, hookDir: path.join(paths.home, 'hooks', id), previousValues, source, files: {} };
+    // Only the chain source changes for an orphaned folder. previousValues keeps the
+    // original setting, so uninstall still restores exactly what was there before.
+    if (orphaned) warnings.push(`core.hooksPath pointed at a Sphinx hooks folder no install records (${orphaned}); existing hooks now chain from Git's default hooks folder. Uninstall restores the original setting.`);
+    entry = { id, scope: info.scope, root: info.root, hookDir: path.join(paths.home, 'hooks', id), previousValues: scopeValues, source, files: {} };
   }
   const directoryState = await lstat(entry.hookDir).catch(error => {
     if (error.code === 'ENOENT') return null;

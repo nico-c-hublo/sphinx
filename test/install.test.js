@@ -319,14 +319,15 @@ test('a reinstall never chains to an unrecorded Sphinx hooks folder, so pass-thr
   assert.match(result.warnings.join('\n'), /Sphinx hooks folder no install records/);
   const entry = (await json(f.paths.install)).installs.global;
   assert.deepEqual(entry.source, { kind: 'default' });
-  assert.deepEqual(entry.previousValues, []);
+  assert.deepEqual(entry.previousValues, [hookDir]);
   assert.doesNotMatch(await readFile(path.join(hookDir, 'post-checkout'), 'utf8'), /hook_dir='/);
   const output = path.join(f.base, 'chained');
   await executable(path.join(f.repo, '.git', 'hooks', 'post-checkout'), '#!/bin/sh\nprintf ran > "$SPHINX_TEST_OUTPUT"\n');
   execFileSync(path.join(hookDir, 'post-checkout'), [], { cwd: f.repo, env: { ...f.env, SPHINX_TEST_OUTPUT: output, SPHINX_EVALUATOR: '1' }, timeout: 5000 });
   assert.equal(await readFile(output, 'utf8'), 'ran');
+  // Uninstall is reversible: the setting found before installation comes back.
   await uninstall(f.options);
-  assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
+  assert.equal(f.git('config', '--global', '--get', 'core.hooksPath'), hookDir);
 });
 
 test('repository installation can inherit a global chain and outlive global uninstall', async t => {
