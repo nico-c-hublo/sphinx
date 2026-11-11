@@ -133,4 +133,4 @@ sphinx uninstall          # remove machine-wide Git and agent integrations
 npm uninstall -g sphinx-understand
 ```
 
-Uninstall restores the previous hook configuration when Sphinx still owns it and removes only its own unchanged agent handlers and MCP registration. Later edits are preserved and reported. Machine-wide uninstall leaves explicit repository installations in place, with a warning; remove those first. Configuration, credentials, and assessment state stay in `~/.config/sphinx` for you to keep or delete.
+Uninstall restores the previous hook configuration when Sphinx still owns it and removes only its own unchanged agent handlers and MCP registration. Later edits are preserved and reported. If the restored `core.hooksPath` names a folder that no longer exists, Git runs no hooks; uninstall warns and gives the command to remove the setting, but leaves it in place. Machine-wide uninstall leaves explicit repository installations in place, with a warning; remove those first. Configuration, credentials, and assessment state stay in `~/.config/sphinx` for you to keep or delete.
