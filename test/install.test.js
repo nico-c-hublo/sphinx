@@ -309,6 +309,26 @@ test('reinstallation refuses to clobber user edits and hook recursion fails clos
   await assert.rejects(install(f.options), /Refusing to overwrite edited hook/);
 });
 
+test('a reinstall never chains to an unrecorded Sphinx hooks folder, so pass-through hooks cannot call themselves', { timeout: 10000 }, async t => {
+  const f = await fixture(t);
+  await install(f.options);
+  const hookDir = f.git('config', '--global', '--get', 'core.hooksPath');
+  // The manifest and the hooks are gone, but core.hooksPath still names Sphinx's folder.
+  await rm(f.paths.install); await rm(hookDir, { recursive: true });
+  const result = await install(f.options);
+  assert.match(result.warnings.join('\n'), /Sphinx hooks folder no install records/);
+  const entry = (await json(f.paths.install)).installs.global;
+  assert.deepEqual(entry.source, { kind: 'default' });
+  assert.deepEqual(entry.previousValues, []);
+  assert.doesNotMatch(await readFile(path.join(hookDir, 'post-checkout'), 'utf8'), /hook_dir='/);
+  const output = path.join(f.base, 'chained');
+  await executable(path.join(f.repo, '.git', 'hooks', 'post-checkout'), '#!/bin/sh\nprintf ran > "$SPHINX_TEST_OUTPUT"\n');
+  execFileSync(path.join(hookDir, 'post-checkout'), [], { cwd: f.repo, env: { ...f.env, SPHINX_TEST_OUTPUT: output, SPHINX_EVALUATOR: '1' }, timeout: 5000 });
+  assert.equal(await readFile(output, 'utf8'), 'ran');
+  await uninstall(f.options);
+  assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
+});
+
 test('repository installation can inherit a global chain and outlive global uninstall', async t => {
   const f = await fixture(t);
   await install(f.options);

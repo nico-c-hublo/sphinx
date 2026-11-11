@@ -126,15 +126,38 @@ async function currentConfig(scope, cwd, env) {
   return output ? output.replace(/\0$/, '').split('\0') : [];
 }
 
-async function sourceBeforeInstall({ repo, cwd, env, manifest }) {
+// Resolves symlinks through the nearest existing ancestor, so a folder that is
+// gone compares equal to its parent's real path (macOS /var is /private/var).
+async function canonical(file) {
+  const resolved = path.resolve(file);
+  try { return await realpath(resolved); } catch {}
+  const parent = path.dirname(resolved);
+  return parent === resolved ? resolved : path.join(await canonical(parent), path.basename(resolved));
+}
+
+// A hooks folder under Sphinx's own hooks directory that no install records:
+// left behind by a lost or reset manifest while core.hooksPath still points at it.
+// Chaining to it would make every pass-through hook call itself.
+async function orphanedSphinxHookDir(value, { cwd, paths, manifest }) {
+  if (!value) return false;
+  if (Object.values(manifest.installs).some(entry => entry.hookDir === value)) return false;
+  const [directory, root] = await Promise.all([canonical(path.resolve(cwd, value)), canonical(path.join(paths.home, 'hooks'))]);
+  const relative = path.relative(root, directory);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function sourceBeforeInstall({ repo, cwd, env, paths, manifest }) {
   const args = repo
     ? ['config', '--path', '--get', 'core.hooksPath']
     : ['config', '--global', '--includes', '--path', '--get', 'core.hooksPath'];
   let value = await git(args, cwd, env, [0, 1]);
   if (!value && !repo) value = await git(['config', '--system', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1, 128]);
   const inherited = Object.values(manifest.installs).find(entry => entry.hookDir === value);
-  if (inherited) return inherited.source;
-  return value ? { kind: 'path', value } : { kind: 'default' };
+  if (inherited) return { source: inherited.source };
+  // Never take Sphinx's own hooks folder for the one it replaced: what was there
+  // before Sphinx is unknown, so chain to Git's default hooks folder instead.
+  if (await orphanedSphinxHookDir(value, { cwd, paths, manifest })) return { source: { kind: 'default' }, orphaned: value };
+  return { source: value ? { kind: 'path', value } : { kind: 'default' } };
 }
 
 function sourceShell(source) {
@@ -250,12 +273,15 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
   if (previous && scopeValues.at(-1) !== previous.hookDir) {
     throw new Error('Git hooks changed since Sphinx was installed. Run sphinx uninstall first; your current configuration will be preserved.');
   }
-  const entry = previous || {
-    id, scope: info.scope, root: info.root,
-    hookDir: path.join(paths.home, 'hooks', id),
-    previousValues: scopeValues,
-    source: await sourceBeforeInstall({ repo, cwd, env, manifest }), files: {},
-  };
+  let entry = previous;
+  if (!entry) {
+    const { source, orphaned } = await sourceBeforeInstall({ repo, cwd, env, paths, manifest });
+    // An orphaned Sphinx folder is not restored on uninstall either: its hooks are gone by then.
+    const previousValues = [];
+    for (const value of scopeValues) if (!await orphanedSphinxHookDir(value, { cwd, paths, manifest })) previousValues.push(value);
+    if (orphaned) warnings.push(`core.hooksPath pointed at a Sphinx hooks folder no install records (${orphaned}); existing hooks now chain from Git's default hooks folder.`);
+    entry = { id, scope: info.scope, root: info.root, hookDir: path.join(paths.home, 'hooks', id), previousValues, source, files: {} };
+  }
   const directoryState = await lstat(entry.hookDir).catch(error => {
     if (error.code === 'ENOENT') return null;
     throw error;
