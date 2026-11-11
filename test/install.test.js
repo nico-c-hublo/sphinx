@@ -394,8 +394,11 @@ test('the recorded hooks folder spelled through a symlink still counts as Sphinx
 test('the recorded hooks folder spelled with ~ still counts as Sphinx-owned on reinstall and uninstall', async t => {
   const f = await fixture(t);
   await install(f.options);
-  f.git('config', '--global', 'core.hooksPath', `~/${path.relative(f.home, path.join(f.paths.home, 'hooks', 'global'))}`);
+  const tilde = `~/${path.relative(f.home, path.join(f.paths.home, 'hooks', 'global'))}`;
+  f.git('config', '--global', 'core.hooksPath', tilde);
   await install(f.options);
+  // Reinstall writes the absolute folder back, so spell it with ~ again for uninstall.
+  f.git('config', '--global', 'core.hooksPath', tilde);
   const removal = await uninstall(f.options);
   assert.doesNotMatch(removal.warnings.join('\n'), /changed after installation/);
   assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
