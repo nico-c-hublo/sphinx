@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { promisify } from 'node:util';
+import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -159,4 +161,74 @@ test('the workflow template pins the Action to the release tag, never runs pull 
   assert.match(text, /\npermissions:\n {2}checks: write\n {2}pull-requests: read\n {2}issues: read\n(?! )/);
   assert.match(text, /\n {2}cancel-in-progress: false\n/, 'a comment must not cancel a run that has already started');
   assert.doesNotMatch(text, /checkout|\brun:/, 'it never checks out or runs pull request code');
+});
+
+test('the pull request of the checked-out branch comes from gh pr view, with reasons a person can act on', async () => {
+  const head = 'c'.repeat(40);
+  const reply = result => { const calls = []; return { calls, gh: async (args, options) => { calls.push({ args, options }); return { stderr: '', missing: false, ...result }; } }; };
+  const open = reply({ ok: true, stdout: JSON.stringify({ number: 24107, url: 'https://github.com/acme/widgets/pull/24107', state: 'OPEN', baseRefName: 'release/1.2', headRefOid: head }) });
+  const { pointsAtBase, ...pull } = await pullRequestForBranch({ cwd: '/repo', gh: open.gh });
+  assert.deepEqual(pull, {
+    number: 24107, url: 'https://github.com/acme/widgets/pull/24107', baseRefName: 'release/1.2', headRefOid: head,
+    repository: { host: 'github.com', owner: 'acme', repo: 'widgets' },
+  });
+  // It tells the Git engine which remotes hold the base repository, in any URL form.
+  for (const url of ['https://github.com/acme/widgets.git', 'git@github.com:Acme/Widgets.git', 'ssh://git@github.com/acme/widgets']) assert.equal(pointsAtBase(url), true, url);
+  for (const url of ['https://github.com/someone/widgets.git', 'https://gitlab.com/acme/widgets.git', '/srv/git/widgets.git']) assert.equal(pointsAtBase(url), false, url);
+  assert.deepEqual(open.calls[0].args, ['pr', 'view', '--json', 'number,url,state,baseRefName,headRefOid']);
+  assert.equal(open.calls[0].options.cwd, '/repo');
+
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: false, missing: true }).gh }), /needs the GitHub CLI \(gh\)\. Install it and sign in with gh auth login/);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: false, stderr: 'no pull requests found for branch "feature"\n' }).gh }), /No pull request found for the checked-out branch: no pull requests found for branch "feature"/);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'MERGED', baseRefName: 'main', headRefOid: head }) }).gh }), /Pull request #3 is merged; --pull-request checks open pull requests only\./);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'OPEN', baseRefName: 'main' }) }).gh }), /without its number, base branch, or head commit/);
+  await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: 'not json' }).gh }), /could not read/);
+});
+
+test('a pull request check stamps the pull request it names, in its base repository, keeping one record set per pull request', async t => {
+  const env = await home(t), calls = [];
+  // Checked from a fork clone: the remote is the fork, the pull request lives upstream, and the destination is main.
+  const checked = number => ({ ...snapshot, target: { remote: 'upstream', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/main', pullRequest: { number, url: `https://github.com/upstream-org/widgets/pull/${number}` } } });
+  assert.deepEqual(pullRequestCheck(checked(12)), { number: 12, url: 'https://github.com/upstream-org/widgets/pull/12', repository: { host: 'github.com', owner: 'upstream-org', repo: 'widgets' } });
+  assert.equal(pullRequestCheck(snapshot), null, 'a push names no pull request');
+  assert.equal(await pullRequestPush(checked(12)), true, 'the page offers the stamp although the destination is the default branch');
+  assert.equal(await scheduleStamp({ snapshot: checked(12), session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
+  assert.equal(await scheduleStamp({ snapshot: { ...checked(13), head: 'd'.repeat(40) }, session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
+  const [first, second] = await Promise.all(calls.map(call => readFile(call[1][1], 'utf8').then(JSON.parse)));
+  assert.deepEqual({ ...first, branchFile: undefined }, { version: 1, repo: { host: 'github.com', owner: 'upstream-org', repo: 'widgets' }, sha: snapshot.head, branch: 'main', pullRequest: 12, branchFile: undefined, status: true, comment: false });
+  assert.equal(second.pullRequest, 13);
+  assert.notEqual(first.branchFile, second.branchFile, 'two pull requests into main keep separate comments');
+  assert.deepEqual(JSON.parse(await readFile(first.branchFile, 'utf8')).records.map(record => record.head), [snapshot.head]);
+  // A URL that does not name the recorded pull request is not trusted with a stamp.
+  const mismatched = { ...checked(12), target: { ...checked(12).target, pullRequest: { number: 12, url: 'https://github.com/upstream-org/widgets/pull/99' } } };
+  assert.equal(pullRequestCheck(mismatched).repository, null);
+  assert.equal(await pullRequestPush(mismatched), false);
+  assert.equal(await scheduleStamp({ snapshot: mismatched, session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), false);
+  assert.equal(calls.length, 2);
+});
+
+test('the stamp job for a pull request check comments on that pull request without searching for one', async t => {
+  const { gh, calls } = fakeGh([[/^auth/, ok()], [/commits\//, ok('sha')], [/statuses\//, ok()], [/^api user/, ok('me\n')],
+    [/upstream-org\/widgets\/issues\/12\/comments --paginate/, ok('')], [/upstream-org\/widgets\/issues\/12\/comments --method POST/, ok('https://github.com/c/12\n')]]);
+  const stampJob = await job(t, { repo: { host: 'github.com', owner: 'upstream-org', repo: 'widgets' }, branch: 'main', pullRequest: 12, comment: true });
+  assert.equal(await runStampJob(stampJob, { gh, wait: async () => {} }), 'done');
+  const commands = calls.map(call => call.args.join(' '));
+  assert.equal(commands.some(command => /pulls\?|\.parent\.full_name/.test(command)), false, 'no pull request lookup by branch');
+  assert.ok(commands.some(command => /repos\/upstream-org\/widgets\/statuses\/b{40} --method POST/.test(command)));
+  const { parseStamp } = await import('../action/index.mjs');
+  assert.equal(parseStamp(calls.find(call => /issues\/12\/comments --method POST/.test(call.args.join(' '))).input.body).head, snapshot.head);
+});
+
+test('GitHub is an optional integration: the CLI, the Git engine, the hook, and the page load without it', async () => {
+  // A resolve hook in a fresh process reports whether anything reaches src/github.js.
+  const hooks = `export async function resolve(specifier, context, next) {
+    const resolved = await next(specifier, context);
+    if (resolved.url.endsWith('/src/github.js')) process.stderr.write('github.js loaded\\n');
+    return resolved;
+  }`;
+  const script = `import { register } from 'node:module';
+    register('data:text/javascript,' + encodeURIComponent(${JSON.stringify(hooks)}));
+    for (const name of ['cli', 'git', 'git-gate', 'browser-interview']) await import(new URL('../src/' + name + '.js', ${JSON.stringify(import.meta.url)}));`;
+  const { stderr } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, NO_COLOR: '1' } });
+  assert.doesNotMatch(stderr, /github\.js loaded/);
 });

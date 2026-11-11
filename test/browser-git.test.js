@@ -489,3 +489,38 @@ test('sphinx check --browser serves the page with no Git operation waiting, resu
   await assert.rejects(f.bare('rev-parse', '--verify', 'refs/heads/main'), 'a manual check never pushes');
   assert.equal((await f.calls()).some(call => call.leaked), false, 'ignored files stay out of model requests');
 });
+
+test('a pull request checked with sphinx check --browser --pull-request offers the stamp and, once passed, records it for that pull request', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const url = 'https://github.com/acme/widgets.git', remote = (await f.git('remote', 'get-url', 'origin'));
+  await f.git('config', `url.${remote}.insteadOf`, url); await f.git('remote', 'set-url', 'origin', url);
+  await f.git('push', '-q', '--no-verify', 'origin', 'main');
+  await f.git('switch', '-qc', 'feature');
+  await writeFile(path.join(f.repo, 'app.js'), `${f.app}export const size=()=>seen.size;\n`);
+  await f.git('commit', '-qam', 'Count queued IDs'); await f.git('push', '-q', '--no-verify', '--set-upstream', 'origin', 'feature');
+  const head = await f.git('rev-parse', 'HEAD');
+  // gh knows the pull request and nothing else, so the stamp worker stops at "not signed in".
+  const pull = JSON.stringify({ number: 12, url: 'https://github.com/acme/widgets/pull/12', state: 'OPEN', baseRefName: 'main', headRefOid: head });
+  await writeFile(path.join(f.env.PATH.split(path.delimiter)[0], 'gh'), `#!/bin/sh\n[ "$1 $2" = "pr view" ] && { printf '%s' '${pull}'; exit 0; }\nexit 1\n`, { mode: 0o755 });
+  const child = spawn(process.execPath, [CLI, 'check', '--browser', '--pull-request'], { cwd: f.repo, env: f.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  f.children.push(child); let output = '';
+  child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+  child.finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal, output })); });
+  child.output = () => output;
+
+  const page = await f.question(child);
+  assert.equal(page.state.waitingGit, false);
+  assert.deepEqual(page.state.stamp, { post: false, action: false }, 'the page offers to post the stamp to the pull request');
+  const choose = await fetch(`${page.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(page.url).origin, 'X-Sphinx-Token': new URL(page.url).pathname.slice(1) }, body: JSON.stringify({ post: true }) });
+  assert.equal(choose.status, 200);
+  assert.equal((await f.submit(page, 'answer', ANSWER)).status, 202);
+  await f.until(child, page.url, 'passed');
+  const passed = await Promise.race([child.finished, delay(15000).then(() => assert.fail(`sphinx check kept running: ${child.output()}`))]);
+  assert.equal(passed.code, 0, passed.output);
+  assert.match(passed.output, /Posting\s+the\s+result\s+to\s+pull\s+request\s+#12\s+on\s+GitHub/);
+  const branches = path.join(f.env.SPHINX_HOME, 'github', 'branches');
+  const [recorded] = await Promise.all((await readdir(branches)).map(async name => JSON.parse(await readFile(path.join(branches, name), 'utf8'))));
+  assert.equal(recorded.ref, 'pull/acme/widgets/12');
+  assert.deepEqual(recorded.records.map(record => [record.head, record.outcome, record.ref]), [[head, 'passed', 'refs/heads/main']]);
+  await assert.rejects(f.bare('rev-parse', '--verify', 'refs/heads/feature^{commit}').then(sha => assert.notEqual(sha, head)), 'a pull request check never pushes');
+});
