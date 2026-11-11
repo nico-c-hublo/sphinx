@@ -135,15 +135,27 @@ async function canonical(file) {
   return parent === resolved ? resolved : path.join(await canonical(parent), path.basename(resolved));
 }
 
-// A hooks folder under Sphinx's own hooks directory that no install records:
-// left behind by a lost or reset manifest while core.hooksPath still points at it.
-// Chaining to it would make every pass-through hook call itself.
-async function orphanedSphinxHookDir(value, { cwd, paths, manifest }) {
-  if (!value) return false;
-  if (Object.values(manifest.installs).some(entry => entry.hookDir === value)) return false;
-  const [directory, root] = await Promise.all([canonical(path.resolve(cwd, value)), canonical(path.join(paths.home, 'hooks'))]);
+function isInside(root, directory) {
   const relative = path.relative(root, directory);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+// Git resolves a relative core.hooksPath against the working tree root, not the
+// directory a command runs in; a bare repository has no root, so cwd stands in.
+async function hooksPathBase(cwd, env) {
+  try { return await git(['rev-parse', '--show-toplevel'], cwd, env) || cwd; } catch { return cwd; }
+}
+
+// Classifies the hooks folder core.hooksPath names, comparing real paths:
+// a recorded Sphinx install to inherit from, or an orphaned folder under Sphinx's
+// own hooks directory that no install records. An orphan is left behind by a lost
+// or reset manifest; chaining to it would make every pass-through hook call itself.
+async function sphinxHookDirFor(value, { cwd, env, paths, manifest }) {
+  const directory = await canonical(path.resolve(await hooksPathBase(cwd, env), value));
+  for (const entry of Object.values(manifest.installs)) {
+    if (await canonical(entry.hookDir) === directory) return { inherited: entry };
+  }
+  return { orphaned: isInside(await canonical(path.join(paths.home, 'hooks')), directory) };
 }
 
 async function sourceBeforeInstall({ repo, cwd, env, paths, manifest }) {
@@ -152,12 +164,13 @@ async function sourceBeforeInstall({ repo, cwd, env, paths, manifest }) {
     : ['config', '--global', '--includes', '--path', '--get', 'core.hooksPath'];
   let value = await git(args, cwd, env, [0, 1]);
   if (!value && !repo) value = await git(['config', '--system', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1, 128]);
-  const inherited = Object.values(manifest.installs).find(entry => entry.hookDir === value);
+  if (!value) return { source: { kind: 'default' } };
+  const { inherited, orphaned } = await sphinxHookDirFor(value, { cwd, env, paths, manifest });
   if (inherited) return { source: inherited.source };
   // Never take Sphinx's own hooks folder for the one it replaced: what was there
   // before Sphinx is unknown, so chain to Git's default hooks folder instead.
-  if (await orphanedSphinxHookDir(value, { cwd, paths, manifest })) return { source: { kind: 'default' }, orphaned: value };
-  return { source: value ? { kind: 'path', value } : { kind: 'default' } };
+  if (orphaned) return { source: { kind: 'default' }, orphaned: value };
+  return { source: { kind: 'path', value } };
 }
 
 function sourceShell(source) {

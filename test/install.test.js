@@ -330,6 +330,34 @@ test('a reinstall never chains to an unrecorded Sphinx hooks folder, so pass-thr
   assert.equal(f.git('config', '--global', '--get', 'core.hooksPath'), hookDir);
 });
 
+test('a recorded Sphinx hooks folder reached through a symlink is inherited, not taken for an orphan', async t => {
+  const f = await fixture(t);
+  const userHooks = path.join(f.base, 'user-hooks');
+  await mkdir(userHooks);
+  f.git('config', '--global', 'core.hooksPath', userHooks);
+  await install(f.options);
+  const alias = path.join(f.base, 'hooks-alias');
+  await symlink(path.join(f.paths.home, 'hooks'), alias);
+  f.git('config', '--local', 'core.hooksPath', path.join(alias, 'global'));
+  const result = await install({ ...f.options, repo: true });
+  assert.doesNotMatch(result.warnings.join('\n'), /no install records/);
+  const repoEntry = Object.values((await json(f.paths.install)).installs).find(entry => entry.id !== 'global');
+  assert.deepEqual(repoEntry.source, { kind: 'path', value: userHooks });
+});
+
+test('an unrecorded Sphinx hooks folder is recognised from a relative path and a name starting with dots', async t => {
+  const f = await fixture(t);
+  const stale = path.join(f.paths.home, 'hooks', '..stale');
+  // Git resolves a relative hooks path against the working tree root, not the subdirectory.
+  f.git('config', '--local', 'core.hooksPath', path.relative(f.repo, stale));
+  const subdirectory = path.join(f.repo, 'nested');
+  await mkdir(subdirectory);
+  const result = await install({ ...f.options, cwd: subdirectory, repo: true });
+  assert.match(result.warnings.join('\n'), /Sphinx hooks folder no install records/);
+  const repoEntry = Object.values((await json(f.paths.install)).installs).find(entry => entry.id !== 'global');
+  assert.deepEqual(repoEntry.source, { kind: 'default' });
+});
+
 test('repository installation can inherit a global chain and outlive global uninstall', async t => {
   const f = await fixture(t);
   await install(f.options);
