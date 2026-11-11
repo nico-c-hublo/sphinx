@@ -151,21 +151,25 @@ async function hooksPathBase(cwd, env) {
   return cwd;
 }
 
-// The real path of the folder a core.hooksPath value names, as Git resolves it from cwd.
-async function hooksPathDirectory(value, cwd, env) {
-  return canonical(path.resolve(await hooksPathBase(cwd, env), value));
+// Resolves core.hooksPath values, as Git does from cwd, to the real path of the folder
+// they name, or null for no value. Every check compares these folders, never the
+// spelling. Values must come from git config --path: an unexpanded ~ would resolve
+// as a folder named ~. Only a relative value needs the base, which Git reports once.
+function hooksPathResolver(cwd, env) {
+  let base;
+  return async value => {
+    if (!value) return null;
+    if (path.isAbsolute(value)) return canonical(value);
+    base ??= hooksPathBase(cwd, env);
+    return canonical(path.resolve(await base, value));
+  };
 }
 
-// value must come from git config --path: an unexpanded ~ would resolve as a folder named ~.
-async function sameHooksDirectory(value, hookDir, cwd, env) {
-  return value === hookDir || (!!value && await hooksPathDirectory(value, cwd, env) === await canonical(hookDir));
-}
-
-// The recorded Sphinx install whose hooks folder a core.hooksPath value names, however it is spelled.
-async function recordedInstallFor(value, { cwd, env, manifest }) {
-  if (!value) return null;
+// The recorded Sphinx install whose hooks folder is this resolved folder.
+async function installForFolder(folder, manifest) {
+  if (!folder) return null;
   for (const entry of Object.values(manifest.installs)) {
-    if (await sameHooksDirectory(value, entry.hookDir, cwd, env)) return entry;
+    if (await canonical(entry.hookDir) === folder) return entry;
   }
   return null;
 }
@@ -173,8 +177,8 @@ async function recordedInstallFor(value, { cwd, env, manifest }) {
 // A folder under Sphinx's own hooks directory that no install records is an orphan,
 // left behind by a lost or reset manifest; chaining to it would make every
 // pass-through hook call itself.
-async function isOrphanedSphinxHookDir(value, { cwd, env, paths }) {
-  return isInside(await canonical(path.join(paths.home, 'hooks')), await hooksPathDirectory(value, cwd, env));
+async function isOrphanedSphinxHookDir(folder, paths) {
+  return isInside(await canonical(path.join(paths.home, 'hooks')), folder);
 }
 
 // The hooks setting an install replaces, with the config scope it comes from.
@@ -190,14 +194,15 @@ async function hooksPathBeforeInstall(repo, cwd, env) {
   return system ? { scope: 'system', value: system } : null;
 }
 
-async function sourceBeforeInstall({ repo, cwd, env, paths, manifest }) {
+async function sourceBeforeInstall({ repo, cwd, env, paths, manifest, resolveHooksPath }) {
   const setting = await hooksPathBeforeInstall(repo, cwd, env);
   if (!setting) return { source: { kind: 'default' } };
-  const inherited = await recordedInstallFor(setting.value, { cwd, env, manifest });
+  const folder = await resolveHooksPath(setting.value);
+  const inherited = await installForFolder(folder, manifest);
   if (inherited) return { source: inherited.source };
   // Never take Sphinx's own hooks folder for the one it replaced: what was there
   // before Sphinx is unknown, so chain to Git's default hooks folder instead.
-  if (await isOrphanedSphinxHookDir(setting.value, { cwd, env, paths })) return { source: { kind: 'default' }, orphan: setting };
+  if (await isOrphanedSphinxHookDir(folder, paths)) return { source: { kind: 'default' }, orphan: setting };
   return { source: { kind: 'path', value: setting.value } };
 }
 
@@ -232,9 +237,9 @@ function hookScript({ event, source, launcher, home, id }) {
   return `${header}${sourceShell(source)}hook="$hook_dir/${event}"\nif [ -x "$hook" ]; then\n  exec "$hook" "$@"\nfi\nexit 0\n`;
 }
 
-async function hookNames(source, cwd, env) {
+async function hookNames(source, cwd, env, resolveHooksPath) {
   let directory;
-  if (source.kind === 'path') directory = path.resolve(await hooksPathBase(cwd, env), source.value);
+  if (source.kind === 'path') directory = await resolveHooksPath(source.value);
   else {
     try { directory = path.join(await git(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd, env), 'hooks'); }
     catch { return HOOKS; }
@@ -320,12 +325,13 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
   const agentPlans = await prepareAgents({ agents, paths, env, cliPath, launcher, manifest });
   // Raw values are what uninstall restores; comparisons need them expanded, as Git reads them.
   const scopeValues = await currentConfig(info.scope, cwd, env);
-  if (previous && !await sameHooksDirectory((await currentConfig(info.scope, cwd, env, { expand: true })).at(-1), previous.hookDir, cwd, env)) {
+  const resolveHooksPath = hooksPathResolver(cwd, env);
+  if (previous && await resolveHooksPath((await currentConfig(info.scope, cwd, env, { expand: true })).at(-1)) !== await canonical(previous.hookDir)) {
     throw new Error('Git hooks changed since Sphinx was installed. Run sphinx uninstall first; your current configuration will be preserved.');
   }
   let entry = previous;
   if (!entry) {
-    const { source, orphan } = await sourceBeforeInstall({ repo, cwd, env, paths, manifest });
+    const { source, orphan } = await sourceBeforeInstall({ repo, cwd, env, paths, manifest, resolveHooksPath });
     // Only the chain source changes for an orphaned folder. previousValues keeps the
     // original setting, so uninstall still restores exactly what was there before.
     if (orphan) warnings.push(orphanWarning(orphan, repo));
@@ -336,7 +342,7 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
     throw error;
   });
   if (directoryState?.isSymbolicLink()) throw new Error(`Refusing to replace a symlinked hook directory: ${entry.hookDir}`);
-  const names = await hookNames(entry.source, cwd, env);
+  const names = await hookNames(entry.source, cwd, env, resolveHooksPath);
   const scripts = names.map(event => ({ event, content: hookScript({ event, source: entry.source, launcher, home: paths.home, id }) }));
   for (const { event, content } of scripts) {
     const file = path.join(entry.hookDir, event);
@@ -389,7 +395,7 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
     try {
       await git(['rev-parse', '--git-dir'], cwd, env);
       const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-      if (!await recordedInstallFor(effective, { cwd, env, manifest })) warnings.push('This repository overrides core.hooksPath. Run sphinx install --repo here to chain that hook setup.');
+      if (!await installForFolder(await resolveHooksPath(effective), manifest)) warnings.push('This repository overrides core.hooksPath. Run sphinx install --repo here to chain that hook setup.');
     } catch {}
   }
   return { messages, warnings, agents: agentPlans.map(plan => plan.name) };
@@ -401,8 +407,9 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
   const id = repo ? (await repoInfo(cwd, env)).id : 'global';
   const entry = manifest.installs[id];
   if (entry) {
+    const resolveHooksPath = hooksPathResolver(cwd, env);
     const values = await currentConfig(entry.scope, cwd, env, { expand: true });
-    const owned = values.length === 1 && await sameHooksDirectory(values[0], entry.hookDir, cwd, env);
+    const owned = values.length === 1 && await resolveHooksPath(values[0]) === await canonical(entry.hookDir);
     if (owned) {
       await git(['config', entry.scope, '--unset-all', 'core.hooksPath'], cwd, env, [0, 5]);
       for (const value of entry.previousValues) await git(['config', entry.scope, '--add', 'core.hooksPath', value], cwd, env);
@@ -428,7 +435,7 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
     // Git uses only the last value. A relative global value names a folder in each
     // repository, so no single location can say whether it exists.
     const effective = owned ? (await currentConfig(entry.scope, cwd, env, { expand: true })).at(-1) : null;
-    if (effective && (path.isAbsolute(effective) || entry.scope !== '--global') && !await exists(await hooksPathDirectory(effective, cwd, env))) {
+    if (effective && (path.isAbsolute(effective) || entry.scope !== '--global') && !await exists(await resolveHooksPath(effective))) {
       warnings.push(`Restored core.hooksPath to ${effective}, its setting before installation, but that folder no longer exists, so Git runs no hooks. If nothing else needs it, remove it with: git config ${entry.scope} --unset-all core.hooksPath`);
     }
     delete manifest.installs[id];
