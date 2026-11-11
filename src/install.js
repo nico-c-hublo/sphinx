@@ -181,17 +181,21 @@ async function isOrphanedSphinxHookDir(folder, paths) {
   return isInside(await canonical(path.join(paths.home, 'hooks')), folder);
 }
 
-// The hooks setting an install replaces, with the config scope it comes from.
+// The hooks setting an install replaces, with the config scope it comes from, in the
+// option form an install records (--global, --system, --local, --worktree; --command
+// for a value from git -c or the environment, which is no git config option).
 async function hooksPathBeforeInstall(repo, cwd, env) {
   if (repo) {
     const output = await git(['config', '--show-scope', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
     const tab = output.indexOf('\t');
-    return output ? { scope: output.slice(0, tab), value: output.slice(tab + 1) } : null;
+    return output ? { scope: `--${output.slice(0, tab)}`, value: output.slice(tab + 1) } : null;
   }
+  // A global install replaces the setting every repository falls back to, so a
+  // local or worktree value around cwd is not it: ask the global, then the system file.
   const global = await git(['config', '--global', '--includes', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-  if (global) return { scope: 'global', value: global };
+  if (global) return { scope: '--global', value: global };
   const system = await git(['config', '--system', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1, 128]);
-  return system ? { scope: 'system', value: system } : null;
+  return system ? { scope: '--system', value: system } : null;
 }
 
 async function sourceBeforeInstall({ repo, cwd, env, paths, manifest, resolveHooksPath }) {
@@ -209,8 +213,8 @@ async function sourceBeforeInstall({ repo, cwd, env, paths, manifest, resolveHoo
 // Where a setting that names an orphan lives on after this install, and how to clear it.
 function orphanWarning({ value, scope }, repo) {
   const base = `core.hooksPath pointed at a Sphinx hooks folder no install records (${value}); existing hooks now chain from Git's default hooks folder. Uninstall restores the original setting.`;
-  if (scope === 'system') return `${base} The system core.hooksPath still names that folder${repo ? '' : ' and applies again after uninstall'}; remove it with: git config --system --unset-all core.hooksPath`;
-  if (repo && scope === 'global') return `${base} The global core.hooksPath still names that folder; run sphinx install without --repo to repair it.`;
+  if (scope === '--system') return `${base} The system core.hooksPath still names that folder${repo ? '' : ' and applies again after uninstall'}; remove it with: git config --system --unset-all core.hooksPath`;
+  if (repo && scope === '--global') return `${base} The global core.hooksPath still names that folder; run sphinx install without --repo to repair it.`;
   return base;
 }
 
@@ -432,8 +436,9 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
     }
     await rmdir(entry.hookDir).catch(() => {});
     // Uninstall stays reversible, but a restored folder that is gone disables every hook.
-    // Git uses only the last value. A relative global value names a folder in each
-    // repository, so no single location can say whether it exists.
+    // Git uses only the last value, checked from cwd. A relative global value names a
+    // folder in each repository, so it is not checked. A relative local value is checked
+    // in cwd's worktree only; the repository's other worktrees resolve it from their own roots.
     const effective = owned ? (await currentConfig(entry.scope, cwd, env, { expand: true })).at(-1) : null;
     if (effective && (path.isAbsolute(effective) || entry.scope !== '--global') && !await exists(await resolveHooksPath(effective))) {
       warnings.push(`Restored core.hooksPath to ${effective}, its setting before installation, but that folder no longer exists, so Git runs no hooks. If nothing else needs it, remove it with: git config ${entry.scope} --unset-all core.hooksPath`);
