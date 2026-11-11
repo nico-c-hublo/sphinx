@@ -17,7 +17,6 @@ import { loadChangeView } from './change-view.js';
 import { updateStatus, updatePlan, scheduleUpdate } from './update.js';
 import { modelChoices, validChoice } from './model-choices.js';
 import { setRepositoryDistance } from './repo-config.js';
-import { pullRequestCheck, pullRequestPush, usesSphinxAction } from './github.js';
 
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
@@ -390,8 +389,10 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       stamp = null;
       // The waiting Git hook posts the stamp after a push, and sphinx check posts it after a
       // pull request check (--pull-request). Any other check started by hand never offers it.
-      if ((waitingGit || pullRequestCheck(session.snapshot)) && await pullRequestPush(session.snapshot).catch(() => false)) {
-        const action = await usesSphinxAction(request.repoRoot).catch(() => false);
+      // Only a push can be stamped, so only a push loads the optional GitHub integration.
+      const github = session.snapshot.event === 'pre-push' ? await import('./github.js') : null;
+      if (github && (waitingGit || github.pullRequestCheck(session.snapshot)) && await github.pullRequestPush(session.snapshot).catch(() => false)) {
+        const action = await github.usesSphinxAction(request.repoRoot).catch(() => false);
         stamp = { post: stampChoices.get(request.id) ?? (action || !!config.github?.comment), action };
         stampChoices.set(request.id, stamp.post);
       }

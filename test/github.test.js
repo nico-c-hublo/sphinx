@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
@@ -215,4 +217,18 @@ test('the stamp job for a pull request check comments on that pull request witho
   assert.ok(commands.some(command => /repos\/upstream-org\/widgets\/statuses\/b{40} --method POST/.test(command)));
   const { parseStamp } = await import('../action/index.mjs');
   assert.equal(parseStamp(calls.find(call => /issues\/12\/comments --method POST/.test(call.args.join(' '))).input.body).head, snapshot.head);
+});
+
+test('GitHub is an optional integration: the CLI, the Git engine, the hook, and the page load without it', async () => {
+  // A resolve hook in a fresh process reports whether anything reaches src/github.js.
+  const hooks = `export async function resolve(specifier, context, next) {
+    const resolved = await next(specifier, context);
+    if (resolved.url.endsWith('/src/github.js')) process.stderr.write('github.js loaded\\n');
+    return resolved;
+  }`;
+  const script = `import { register } from 'node:module';
+    register('data:text/javascript,' + encodeURIComponent(${JSON.stringify(hooks)}));
+    for (const name of ['cli', 'git', 'git-gate', 'browser-interview']) await import(new URL('../src/' + name + '.js', ${JSON.stringify(import.meta.url)}));`;
+  const { stderr } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, NO_COLOR: '1' } });
+  assert.doesNotMatch(stderr, /github\.js loaded/);
 });

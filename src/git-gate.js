@@ -7,7 +7,6 @@ import { createBrowserInterview } from './browser-interview.js';
 import { yoloStatus, recordOverride } from './overrides.js';
 import { dropContext } from './working-context.js';
 import { collectGarbage } from './storage.js';
-import { scheduleStamp } from './github.js';
 import { prefersTerminal, runGitTerminalCheck } from './git-interview.js';
 
 async function snapshotsFor({ event, args, input, cwd, config, env }) {
@@ -25,6 +24,9 @@ export function interviewEnvironment(cwd, env) {
   }
   return scoped;
 }
+
+// GitHub is an optional integration, loaded only when a pass or skip is stamped.
+const scheduleStamp = async options => (await import('./github.js')).scheduleStamp(options);
 
 /** Wait inside Git's original hook. Never reconstruct or replay a Git command. */
 export async function runGitGate({ event, args = [], input = '', cwd = process.cwd(), env = process.env, signal,
