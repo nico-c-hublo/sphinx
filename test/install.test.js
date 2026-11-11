@@ -331,6 +331,89 @@ test('a reinstall never chains to an unrecorded Sphinx hooks folder, so pass-thr
   assert.match(removal.warnings.join('\n'), /no longer exists, so Git runs no hooks/);
 });
 
+test('a worktree of a bare repository resolves a relative hooks path from its own root, on install and uninstall', async t => {
+  const f = await fixture(t);
+  const run = (args, cwd = f.base) => execFileSync('git', args, { cwd, env: f.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  f.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'base');
+  const bare = path.join(f.base, 'project.git'), linked = path.join(f.base, 'linked');
+  run(['clone', '-q', '--bare', f.repo, bare]);
+  run(['--git-dir', bare, 'worktree', 'add', '-q', linked]);
+  const stale = path.join(f.paths.home, 'hooks', 'stale');
+  // The bare repository's shared config names the folder relative to the worktree root.
+  run(['config', 'core.hooksPath', path.relative(linked, stale)], bare);
+  const nested = path.join(linked, 'nested');
+  await mkdir(nested);
+  const result = await install({ ...f.options, cwd: nested, repo: true });
+  assert.match(result.warnings.join('\n'), /Sphinx hooks folder no install records/);
+  const repoEntry = Object.values((await json(f.paths.install)).installs).find(entry => entry.id !== 'global');
+  assert.deepEqual(repoEntry.source, { kind: 'default' });
+  const removal = await uninstall({ ...f.options, cwd: nested, repo: true });
+  assert.equal(run(['config', '--get', 'core.hooksPath'], bare), path.relative(linked, stale));
+  assert.match(removal.warnings.join('\n'), /no longer exists, so Git runs no hooks/);
+});
+
+test('a repository install from a subdirectory of a bare repository worktree wraps every hook in its relative hooks folder', async t => {
+  const f = await fixture(t);
+  const run = (args, cwd = f.base) => execFileSync('git', args, { cwd, env: f.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  f.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'base');
+  const bare = path.join(f.base, 'project.git'), linked = path.join(f.base, 'linked');
+  run(['clone', '-q', '--bare', f.repo, bare]);
+  run(['--git-dir', bare, 'worktree', 'add', '-q', linked]);
+  await executable(path.join(linked, 'team-hooks', 'custom-event'), '#!/bin/sh\nexit 0\n');
+  run(['config', 'core.hooksPath', 'team-hooks'], bare);
+  const nested = path.join(linked, 'nested');
+  await mkdir(nested);
+  await install({ ...f.options, cwd: nested, repo: true });
+  const repoEntry = Object.values((await json(f.paths.install)).installs).find(entry => entry.id !== 'global');
+  assert.deepEqual(repoEntry.source, { kind: 'path', value: 'team-hooks' });
+  assert.ok(repoEntry.files['custom-event']);
+});
+
+test('inside a bare repository, a relative hooks path naming the recorded global folder is not reported as an override', async t => {
+  const f = await fixture(t);
+  const bare = path.join(f.base, 'server.git');
+  execFileSync('git', ['init', '-q', '--bare', bare], { env: f.env });
+  // Git resolves a relative hooks path in a bare repository against its Git directory.
+  execFileSync('git', ['config', 'core.hooksPath', path.relative(bare, path.join(f.paths.home, 'hooks', 'global'))], { cwd: bare, env: f.env });
+  const result = await install({ ...f.options, cwd: bare });
+  assert.doesNotMatch(result.warnings.join('\n'), /overrides core\.hooksPath/);
+});
+
+test('the recorded hooks folder spelled through a symlink still counts as Sphinx-owned on reinstall and uninstall', async t => {
+  const f = await fixture(t);
+  await install(f.options);
+  const alias = path.join(f.base, 'hooks-alias');
+  await symlink(path.join(f.paths.home, 'hooks'), alias);
+  f.git('config', '--global', 'core.hooksPath', path.join(alias, 'global'));
+  await install(f.options);
+  const removal = await uninstall(f.options);
+  assert.doesNotMatch(removal.warnings.join('\n'), /changed after installation/);
+  assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
+});
+
+test('uninstall warns about a missing restored folder only when it is the last value, the one Git uses', async t => {
+  const f = await fixture(t);
+  const gone = path.join(f.base, 'gone'), kept = path.join(f.base, 'kept');
+  await mkdir(kept);
+  f.git('config', '--global', '--add', 'core.hooksPath', gone);
+  f.git('config', '--global', '--add', 'core.hooksPath', kept);
+  await install(f.options);
+  const removal = await uninstall(f.options);
+  assert.doesNotMatch(removal.warnings.join('\n'), /no longer exists/);
+  assert.deepEqual(f.git('config', '--global', '--get-all', 'core.hooksPath').split('\n'), [gone, kept]);
+});
+
+test('an orphaned hooks folder in the system config says the system setting still names it', async t => {
+  const f = await fixture(t);
+  const env = { ...f.env, GIT_CONFIG_SYSTEM: path.join(f.base, 'system.gitconfig') };
+  delete env.GIT_CONFIG_NOSYSTEM;
+  execFileSync('git', ['config', '--system', 'core.hooksPath', path.join(f.paths.home, 'hooks', 'global')], { env });
+  const repository = await install({ ...f.options, env, repo: true });
+  assert.match(repository.warnings.join('\n'), /system core\.hooksPath still names that folder; remove it with: git config --system --unset-all core\.hooksPath/);
+  const global = await install({ ...f.options, env });
+  assert.match(global.warnings.join('\n'), /system core\.hooksPath still names that folder and applies again after uninstall/);
+});
+
 test('a repository install that inherits an orphaned global hooks folder says the global setting still names it', async t => {
   const f = await fixture(t);
   f.git('config', '--global', 'core.hooksPath', path.join(f.paths.home, 'hooks', 'global'));
