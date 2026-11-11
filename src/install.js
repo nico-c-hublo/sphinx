@@ -156,6 +156,7 @@ async function hooksPathDirectory(value, cwd, env) {
   return canonical(path.resolve(await hooksPathBase(cwd, env), value));
 }
 
+// value must come from git config --path: an unexpanded ~ would resolve as a folder named ~.
 async function sameHooksDirectory(value, hookDir, cwd, env) {
   return value === hookDir || (!!value && await hooksPathDirectory(value, cwd, env) === await canonical(hookDir));
 }
@@ -317,8 +318,9 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
   // Validate every selected settings file before mutating any integration.
   const launcher = await sphinxLauncher(cliPath, env);
   const agentPlans = await prepareAgents({ agents, paths, env, cliPath, launcher, manifest });
+  // Raw values are what uninstall restores; comparisons need them expanded, as Git reads them.
   const scopeValues = await currentConfig(info.scope, cwd, env);
-  if (previous && !await sameHooksDirectory(scopeValues.at(-1), previous.hookDir, cwd, env)) {
+  if (previous && !await sameHooksDirectory((await currentConfig(info.scope, cwd, env, { expand: true })).at(-1), previous.hookDir, cwd, env)) {
     throw new Error('Git hooks changed since Sphinx was installed. Run sphinx uninstall first; your current configuration will be preserved.');
   }
   let entry = previous;
@@ -399,7 +401,7 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
   const id = repo ? (await repoInfo(cwd, env)).id : 'global';
   const entry = manifest.installs[id];
   if (entry) {
-    const values = await currentConfig(entry.scope, cwd, env);
+    const values = await currentConfig(entry.scope, cwd, env, { expand: true });
     const owned = values.length === 1 && await sameHooksDirectory(values[0], entry.hookDir, cwd, env);
     if (owned) {
       await git(['config', entry.scope, '--unset-all', 'core.hooksPath'], cwd, env, [0, 5]);
