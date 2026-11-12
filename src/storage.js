@@ -1,6 +1,7 @@
 import { readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { getPaths, readJson } from './config.js';
+import { checkpointExists } from './sessions.js';
 
 // Sphinx keeps only what it still needs. Finished and abandoned checks, stale
 // working contexts, and old background-job records are removed as it goes, and
@@ -45,6 +46,12 @@ export async function collectGarbage({ env = process.env, now = Date.now(), cap 
     }
     // A branch's check records feed its pull request comment while it is active.
     for (const file of await files(path.join(home, 'github', 'branches'))) if (now - file.mtime > 30 * DAY) await drop(file.path);
+    // A choice to comment on a pull request (github.js, saveCommentChoice) belongs to its
+    // checkpoint and goes with it, so a check created again for the same change starts
+    // without a stale choice.
+    for (const file of await files(path.join(home, 'github', 'choices'))) {
+      if (now - file.mtime > HOUR && !(await checkpointExists(path.basename(file.path, '.json'), env))) await drop(file.path);
+    }
     // Size cap: drop the oldest removable data first. Hooks, settings, the
     // install manifest, and credentials are never candidates.
     const removable = (await Promise.all(['sessions', 'context', 'preparations', 'presentations', 'terminals', 'github'].map(dir => files(path.join(home, dir))))).flat()

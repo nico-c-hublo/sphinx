@@ -775,22 +775,41 @@ test('the page shows the question distance and saves a repository change only wh
   assert.equal(JSON.parse(await readFile(path.join(f.snapshot.repoRoot, '.sphinxconfig'), 'utf8')).distance, 'low');
 });
 
-test('a push that may be a pull request offers posting the stamp there, the Git hook gets the choice, and a manual check offers none', async t => {
-  const pr = await fixture(t, { snapshotOverrides: { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } } });
+test('a push that may be a pull request offers posting the stamp there, and the choice is saved for the push that stamps it', async t => {
+  const { savedCommentChoice, commentOffer } = await import('../src/github.js');
+  const feature = { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } };
+  const toggle = (f, post) => fetch(`${f.interview.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': new URL(f.interview.url).pathname.slice(1) }, body: JSON.stringify({ post }) });
+  const pr = await fixture(t, { snapshotOverrides: feature });
   pr.present(); await pr.waitFor('question');
   assert.deepEqual(pr.interview.state.stamp, { post: false, action: false });
-  const toggle = post => fetch(`${pr.interview.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(pr.interview.url).origin, 'X-Sphinx-Token': new URL(pr.interview.url).pathname.slice(1) }, body: JSON.stringify({ post }) });
-  assert.equal((await toggle('yes')).status, 409);
-  assert.equal((await toggle(true)).status, 200);
-  assert.equal(pr.interview.stampChoice(pr.snapshot.id), true);
+  assert.equal((await toggle(pr, 'yes')).status, 409);
+  assert.equal((await toggle(pr, true)).status, 200);
+  assert.equal(await savedCommentChoice(pr.snapshot.id, pr.env), true, 'saved on disk, not only in this process');
   const main = await fixture(t);
   main.present(); await main.waitFor('question');
   assert.equal(main.interview.state.stamp, undefined, 'a push to main is not a pull request');
-  const manual = await fixture(t, { snapshotOverrides: { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } } });
-  const { delivery, ...request } = manual.request;
-  manual.present(request); await manual.waitFor('question');
-  assert.equal(manual.interview.state.stamp, undefined, 'with no Git operation waiting, nothing would post the stamp');
-  assert.equal((await fetch(`${manual.interview.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(manual.interview.url).origin, 'X-Sphinx-Token': new URL(manual.interview.url).pathname.slice(1) }, body: JSON.stringify({ post: true }) })).status, 409);
+  assert.equal((await toggle(main, true)).status, 409);
+  // A push check resumed with no push waiting (its Git process gone): the push that follows the pass stamps it.
+  const resumed = await fixture(t, { snapshotOverrides: feature });
+  const { delivery, ...request } = resumed.request;
+  resumed.present(request); await resumed.waitFor('question');
+  assert.deepEqual(resumed.interview.state.stamp, { post: false, action: false }, 'offered although no Git operation waits');
+  assert.equal((await toggle(resumed, true)).status, 200);
+  assert.deepEqual(await commentOffer(resumed.snapshot, resumed.config, resumed.env), { post: true, action: false }, 'a later page or terminal starts from the saved choice');
+});
+
+test('only the saved choice decides the stamp, so a later one made elsewhere outranks this page', async t => {
+  const { saveCommentChoice, savedCommentChoice } = await import('../src/github.js');
+  const f = await fixture(t, { snapshotOverrides: { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } } });
+  const toggle = post => fetch(`${f.interview.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': new URL(f.interview.url).pathname.slice(1) }, body: JSON.stringify({ post }) });
+  f.present(); await f.waitFor('question');
+  assert.deepEqual(f.interview.state.stamp, { post: false, action: false }, 'shown from the default');
+  assert.equal(await savedCommentChoice(f.snapshot.id, f.env), undefined, 'the default shown is not a choice');
+  assert.equal(f.interview.stampChoice, undefined, 'the page keeps no choice of its own for the push to read');
+  // A click on this page, then sphinx check --no-comment (or another page) for the same check.
+  assert.equal((await toggle(true)).status, 200);
+  await saveCommentChoice(f.snapshot.id, false, f.env);
+  assert.equal(await savedCommentChoice(f.snapshot.id, f.env), false, 'the later choice is the one the push stamps with');
 });
 
 test('a paused push shows the exact command that resumes it', async t => {

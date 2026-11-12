@@ -37,7 +37,7 @@ const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
   activate: ['agents', 'json'],
-  init: ['yes', 'json', 'context', 'suggest', 'apply', 'github-check', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'pull-request', 'retry-review', 'browser', 'terminal'],
+  init: ['yes', 'json', 'context', 'suggest', 'apply', 'github-check', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'pull-request', 'retry-review', 'browser', 'terminal', 'comment', 'no-comment'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
   status: ['json'], config: ['json', 'distance', 'interface', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
@@ -411,10 +411,12 @@ function printSession(session, terminal = ui()) {
 async function checkCommand(values) {
   if (values['retry-review'] && !values.id) throw new Error('--retry-review requires --id to select the failed checkpoint. Find it with sphinx pending.');
   if (values.browser && values.terminal) throw new Error('Choose one of --browser or --terminal.');
+  if (values.comment && values['no-comment']) throw new Error('Choose one of --comment or --no-comment.');
+  const commentFlag = values.comment ? 'comment' : values['no-comment'] ? 'no-comment' : null;
   for (const flag of ['browser', 'terminal']) if (values[flag] && values.json) throw new Error(`--${flag} shows the questionnaire to a person and cannot be combined with --json.`);
   // The pull request names the destination and the change, so nothing else may select them.
   if (values['pull-request']) for (const flag of ['branch', 'staged', 'id']) if (values[flag]) throw new Error(`--pull-request takes the destination from the pull request and cannot be combined with --${flag}.`);
-  const { repo, config } = await repoConfig(); let session;
+  const { repo, config } = await repoConfig(); let session, snapshot;
   if (values.id) session = await store.read(values.id);
   else if (!values.staged && !values.remote && !values.branch && !values['pull-request']) {
     for (const candidate of await store.pending(repo.root)) if (await git.revalidateSnapshot(candidate.snapshot, config)) { session = candidate; break; }
@@ -422,9 +424,20 @@ async function checkCommand(values) {
   if (session && session.snapshot.repoRoot !== repo.root) throw new Error('This checkpoint belongs to a different repository.');
   if (!session) {
     const pullRequest = values['pull-request'] ? await (await import('./github.js')).pullRequestForBranch({ cwd: repo.root }) : undefined;
-    const snapshot = values.staged ? await git.commitSnapshot({ cwd: repo.root, config }) : await git.manualSnapshot({ cwd: repo.root, config, remote: values.remote, branch: values.branch, pullRequest });
+    snapshot = values.staged ? await git.commitSnapshot({ cwd: repo.root, config }) : await git.manualSnapshot({ cwd: repo.root, config, remote: values.remote, branch: values.branch, pullRequest });
     if (!snapshot) { if (values.json) json({ status: 'not-required' }); else ui().success('No assessment required by the current policy.'); return 0; }
-    session = await store.ensure(snapshot, config);
+  } else snapshot = session.snapshot;
+  // Whether a pass comments on the pull request: --comment or --no-comment for this check,
+  // saved with it so the page, the terminal, and the push that stamps it all use it.
+  // Only a push can be stamped, so only a push loads the optional GitHub integration.
+  const github = snapshot.event === 'pre-push' ? await import('./github.js') : null;
+  let commentOffer = github ? await github.commentOffer(snapshot, config).catch(() => null) : null;
+  // Refused before a new checkpoint exists, so a mistaken flag leaves nothing pending.
+  if (commentFlag && !commentOffer) throw new Error(`--${commentFlag} applies to a push to a pull request branch on GitHub, or to sphinx check --pull-request.`);
+  session ??= await store.ensure(snapshot, config);
+  if (commentFlag) {
+    await github.saveCommentChoice(session.id, !!values.comment);
+    commentOffer = { ...commentOffer, post: !!values.comment };
   }
   if (!values.json && questionnaireInterface(values, config) === 'browser') return browserCheck(session, config, { retry: values['retry-review'] });
   if (!values.json && !process.stdin.isTTY) throw new Error('Use sphinx check --json from a coding agent, or run in an interactive terminal.');
@@ -447,7 +460,7 @@ async function checkCommand(values) {
     }
     const code = await runTerminalCheck({
       store, session: await store.read(session.id), config, ask, terminal, signal, waitingGit, more,
-      choose: createPrompts({ ask, ui: terminal }).choose,
+      choose: createPrompts({ ask, ui: terminal }).choose, commentOffer,
       validate: () => validateCheckpoint(session.snapshot, config),
       planProviders: await planProviders().catch(() => []),
       // A skip lets the waiting Git operation through; it is logged like the browser's.
@@ -464,14 +477,14 @@ async function checkCommand(values) {
 // A pull request check has no push to stamp after it, so a pass stamps its pull request
 // here, as the Git hook does after a push: the commit status, and the comment when
 // chosen on the page or set in github.comment. Best-effort, like the hook's.
-async function stampPullRequest(id, config, { terminal, post } = {}) {
+async function stampPullRequest(id, config, { terminal } = {}) {
   const session = await store.read(id).catch(() => null);
   // Any other check has nothing to stamp here, so it never loads the GitHub integration.
   if (!session?.snapshot?.target?.pullRequest || session.status !== 'passed') return false;
   const { pullRequestCheck, scheduleStamp } = await import('./github.js');
   const pull = pullRequestCheck(session.snapshot);
   if (!pull) return false;
-  const scheduled = await scheduleStamp({ snapshot: session.snapshot, session, outcome: 'passed', config, post });
+  const scheduled = await scheduleStamp({ snapshot: session.snapshot, session, outcome: 'passed', config });
   if (scheduled) terminal?.note(`Posting the result to pull request #${pull.number} on GitHub with gh. It appears there in a minute or so.`);
   return scheduled;
 }
@@ -505,7 +518,7 @@ async function browserCheck(session, config, { retry = false } = {}) {
     if (result.status === 'unavailable') throw unavailable(result.reason);
     if (result.status === 'passed') {
       terminal.success('Understanding check complete.');
-      await stampPullRequest(session.id, config, { terminal, post: interview.stampChoice(session.id) });
+      await stampPullRequest(session.id, config, { terminal });
       return 0;
     }
     // The page shows why a check could not finish; say it here too, since the page may be gone.
@@ -571,7 +584,7 @@ export function parseCommandLine(argv) {
     preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, interface: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, 'github-check': { type: 'boolean' }, suggest: { type: 'boolean' }, apply: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
-    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, browser: { type: 'boolean' }, terminal: { type: 'boolean' }, 'pull-request': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
+    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, browser: { type: 'boolean' }, terminal: { type: 'boolean' }, 'pull-request': { type: 'boolean' }, comment: { type: 'boolean' }, 'no-comment': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
   } });
   const [command, id] = positionals;
   if (values.version || values.help || !command || command === 'help') return { values, command, id };

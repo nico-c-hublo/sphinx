@@ -744,6 +744,19 @@ test('check --pull-request checks what the pull request shows, from where the br
   const [pending] = f.cliJson('pending').filter(item => item.id === session.id);
   assert.equal(pending.target, 'refs/heads/main');
 
+  // --comment decides this check's comment without a question at the pass; it is saved with the check.
+  const { savedCommentChoice } = await import('../src/github.js');
+  const both = check({ SPHINX_TEST_GH: pull() }, '--comment', '--no-comment', '--json');
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /Choose one of --comment or --no-comment/);
+  assert.equal(await savedCommentChoice(session.id, f.env), undefined);
+  const chosen = check({ SPHINX_TEST_GH: pull() }, '--comment', '--json');
+  assert.equal(chosen.status, 0, chosen.stderr);
+  assert.equal(JSON.parse(chosen.stdout).id, session.id);
+  assert.equal(await savedCommentChoice(session.id, f.env), true);
+  assert.equal(check({ SPHINX_TEST_GH: pull() }, '--no-comment', '--json').status, 0);
+  assert.equal(await savedCommentChoice(session.id, f.env), false, 'the last flag wins');
+
   // No push follows a pull request check, so the answer that passes it stamps the pull request.
   const passed = f.cliJson('answer', session.id, '--text', 'No. The set already contains the ID and the function returns false.');
   assert.equal(passed.status, 'passed');
@@ -751,4 +764,10 @@ test('check --pull-request checks what the pull request shows, from where the br
   const recorded = await Promise.all((await readdir(branches)).map(async name => JSON.parse(await readFile(path.join(branches, name), 'utf8'))));
   assert.deepEqual(recorded.map(item => item.ref), ['pull/acme/widgets/12']);
   assert.deepEqual(recorded[0].records.map(item => item.head), [head]);
+  // A push to the default branch has no pull request to comment on.
+  const pendingBefore = f.cliJson('pending').map(item => item.id);
+  const toMain = f.run(process.execPath, [CLI, 'check', '--remote', 'origin', '--branch', 'main', '--comment', '--json'], { env: f.env });
+  assert.equal(toMain.status, 1);
+  assert.match(toMain.stderr, /--comment\s+applies\s+to\s+a\s+push\s+to\s+a\s+pull\s+request\s+branch/);
+  assert.deepEqual(f.cliJson('pending').map(item => item.id), pendingBefore, 'refused before a checkpoint is created');
 });

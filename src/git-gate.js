@@ -182,7 +182,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     for (const snapshot of snapshots) {
       try {
         const session = await Promise.resolve(store.read?.(snapshot.id)).catch(() => null);
-        await stamp({ snapshot, session, outcome: skipped.has(snapshot.id) ? 'skipped' : 'passed', config, env, post: browser?.stampChoice?.(snapshot.id) });
+        await stamp({ snapshot, session, outcome: skipped.has(snapshot.id) ? 'skipped' : 'passed', config, env });
       } catch { /* Best-effort only. */ }
     }
     await finished();

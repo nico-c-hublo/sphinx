@@ -490,6 +490,65 @@ test('sphinx check --browser serves the page with no Git operation waiting, resu
   assert.equal((await f.calls()).some(call => call.leaked), false, 'ignored files stay out of model requests');
 });
 
+test('a push check passed on the page after its Git process exited comments on the pull request when the push that follows stamps it', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  // Unlike insteadOf, which every snapshot would see through, ssh keeps the GitHub URL in
+  // the check and the push alike; a fake ssh serves the local bare repository for it.
+  const remote = await f.git('remote', 'get-url', 'origin'), ssh = path.join(path.dirname(f.repo), 'ssh');
+  await writeFile(ssh, `#!/bin/sh\nfor last; do :; done\nexec sh -c "$(printf '%s' "$last" | sed "s|'acme/widgets.git'|'${remote}'|")"\n`, { mode: 0o755 });
+  f.env.GIT_SSH_COMMAND = ssh;
+  await f.git('remote', 'set-url', 'origin', 'git@github.com:acme/widgets.git');
+  // Pushes of every branch are checked, as in a repository that reviews pull request branches.
+  await writeFile(path.join(f.repo, '.sphinxconfig'), JSON.stringify({ version: 1, branches: ['*'] }));
+  await f.git('add', '.sphinxconfig'); await f.git('commit', '-qm', 'Check every branch');
+  await f.git('push', '-q', '--no-verify', 'origin', 'main');
+  await f.git('switch', '-qc', 'feature');
+  await writeFile(path.join(f.repo, 'app.js'), `${f.app}export const size=()=>seen.size;\n`);
+  await f.git('commit', '-qam', 'Count queued IDs');
+  const head = await f.git('rev-parse', 'HEAD');
+  // A signed-in gh that finds pull request #12 for the branch and logs every call the stamp worker makes.
+  const ghLog = path.join(path.dirname(f.repo), 'gh.log');
+  await writeFile(path.join(f.env.PATH.split(path.delimiter)[0], 'gh'), `#!/bin/sh
+printf '%s\\n' "$*" >> "${ghLog}"
+case "$*" in
+  "auth status"*) exit 0 ;;
+  *"/commits/${head}"*) printf '${head}'; exit 0 ;;
+  *"/statuses/"*) exit 0 ;;
+  *"pulls?state=open"*) printf '[{"number":12}]'; exit 0 ;;
+  *"issues/12/comments --method POST"*) printf 'https://github.com/acme/widgets/pull/12#c'; exit 0 ;;
+  *"issues/12/comments"*) exit 0 ;;
+  "api user"*) printf 'fixture'; exit 0 ;;
+esac
+exit 1
+`, { mode: 0o755 });
+  // The check of this push, resumed on the page with no Git operation waiting (as after the push's Git process exited).
+  const child = spawn(process.execPath, [CLI, 'check', '--browser', '--remote', 'origin', '--branch', 'feature'], { cwd: f.repo, env: f.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  f.children.push(child); let output = '';
+  child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+  child.finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal, output })); });
+  child.output = () => output;
+  const page = await f.question(child);
+  assert.equal(page.state.waitingGit, false);
+  assert.deepEqual(page.state.stamp, { post: false, action: false }, 'offered although no push waits: the push that follows stamps it');
+  const choose = await fetch(`${page.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(page.url).origin, 'X-Sphinx-Token': new URL(page.url).pathname.slice(1) }, body: JSON.stringify({ post: true }) });
+  assert.equal(choose.status, 200);
+  assert.equal((await f.submit(page, 'answer', ANSWER)).status, 202);
+  await f.until(child, page.url, 'passed');
+  const passed = await Promise.race([child.finished, delay(15000).then(() => assert.fail(`sphinx check kept running: ${child.output()}`))]);
+  assert.equal(passed.code, 0, passed.output);
+
+  // The push has no page of its own; its hook takes the choice saved with the check.
+  const pushed = await f.startPush(['push', 'origin', 'feature']).finished;
+  assert.equal(pushed.code, 0, pushed.stderr);
+  assert.equal(await f.bare('rev-parse', 'refs/heads/feature'), head);
+  const last = path.join(f.env.SPHINX_HOME, 'github', 'last.json');
+  for (let i = 0; i < 500 && !(await readFile(last, 'utf8').catch(() => '')); i++) await delay(20);
+  assert.equal(JSON.parse(await readFile(last, 'utf8')).result, 'done', await readFile(ghLog, 'utf8').catch(() => ''));
+  const calls = await readFile(ghLog, 'utf8');
+  assert.match(calls, new RegExp(`statuses/${head} --method POST`), 'the commit status, as before');
+  assert.match(calls, /issues\/12\/comments --method POST/, 'and the comment chosen on the page');
+});
+
 test('a pull request checked with sphinx check --browser --pull-request offers the stamp and, once passed, records it for that pull request', { timeout: 60000 }, async t => {
   const f = await fixture(t);
   const url = 'https://github.com/acme/widgets.git', remote = (await f.git('remote', 'get-url', 'origin'));

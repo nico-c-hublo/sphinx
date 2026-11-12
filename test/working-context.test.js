@@ -107,3 +107,16 @@ test('cleanup removes expired, skipped, abandoned, and stale data, keeps recent 
   assert.deepEqual(await readJson(path.join(home, 'config.json'), null), { keep: true }, 'Settings are never removed');
   assert.ok(await storageUsage(r.env) > 0);
 });
+
+test('cleanup removes a choice to comment on a pull request once its checkpoint is gone', async t => {
+  const r = await repo(t);
+  const home = getPaths(r.env).home, sessions = path.join(home, 'sessions'), choices = path.join(home, 'github', 'choices');
+  const now = Date.now(), old = days => new Date(now - days * 86400000);
+  const choice = async (id, days) => { const file = path.join(choices, `${id}.json`); await writeJson(file, { version: 1, post: true }); await utimes(file, old(days), old(days)); };
+  await writeJson(path.join(sessions, 'a'.repeat(64) + '.json'), { status: 'pending' });
+  await choice('a'.repeat(64), 2); // its checkpoint is still pending
+  await choice('b'.repeat(64), 2); // its checkpoint was removed
+  await choice('c'.repeat(64), 0.01); // just saved, its checkpoint not visible yet
+  await collectGarbage({ env: r.env, now });
+  assert.deepEqual((await readdir(choices)).sort(), ['a'.repeat(64) + '.json', 'c'.repeat(64) + '.json']);
+});

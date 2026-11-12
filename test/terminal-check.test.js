@@ -9,7 +9,7 @@ import { questionnaireInterface } from '../src/cli.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const question = (id, prompt, extra = {}) => ({ id, prompt, choices: [], ...extra });
-function harness({ answers, results, waitingGit = false, more = false, started, event = 'pre-push', width = 80, held = false }) {
+function harness({ answers, results, waitingGit = false, more = false, started, event = 'pre-push', width = 80, held = false, commentOffer = null }) {
   let output = '';
   const stream = new Writable({ write(chunk, _e, done) { output += chunk; done(); } });
   const q1 = question('q1', 'What happens on redelivery?\u001b[2J', { evidence: [{ path: 'src/jobs/charge.js', reason: 'PRIVATE_REASON' }] });
@@ -21,7 +21,7 @@ function harness({ answers, results, waitingGit = false, more = false, started, 
     answer: async (_id, text, _c, options) => { sent.push({ text, ...options }); const result = results.shift(); if (result instanceof Error) throw result; return result; },
   };
   const ask = async prompt => { prompts.push(prompt); if (!answers.length) throw new Error(`Unexpected prompt: ${prompt}`); return answers.shift(); };
-  const run = () => runTerminalCheck({ store, session, config: DEFAULT_CONFIG, ask, terminal: createTerminal({ stream, env: { NO_COLOR: '1' }, width }), stream, waitingGit, more, env: { SPHINX_HOME: '/nonexistent-sphinx-home' }, validate: async () => {}, choose: async () => 'pause', skip: async reason => skips.push(reason) });
+  const run = () => runTerminalCheck({ store, session, config: DEFAULT_CONFIG, ask, terminal: createTerminal({ stream, env: { NO_COLOR: '1' }, width }), stream, waitingGit, more, env: { SPHINX_HOME: '/nonexistent-sphinx-home' }, validate: async () => {}, choose: async () => 'pause', skip: async reason => skips.push(reason), commentOffer });
   return { run, sent, skips, prompts, starts, output: () => output, q1 };
 }
 
@@ -106,6 +106,23 @@ test('after a waiting pass, continue lets Git through and stop keeps the receipt
   const retried = harness({ answers: ['It charges twice', 'maybe', '', 'c'], results: [{ ...done }], waitingGit: true });
   assert.equal(await retried.run(), 0);
   assert.equal(retried.output().match(/Type continue or stop\./g).length, 2, 'there is no default choice');
+});
+
+test('a push that may be a pull request says after the pass whether Sphinx comments there, without asking', async () => {
+  const done = () => ({ status: 'passed', question: null, progress: { completed: 1, total: 1 }, verdict: 'correct', feedback: '' });
+  // The harness throws on any prompt it has no answer for, so these runs prove nothing more is asked.
+  const off = harness({ answers: ['It charges twice'], results: [done()], commentOffer: { post: false, action: false } });
+  assert.equal(await off.run(), 0);
+  assert.match(off.output(), /No comment on the pull request\. sphinx check --comment posts one for this\s+check; github\.comment posts one for every check\./);
+  const on = harness({ answers: ['It charges twice', 'continue'], results: [done()], waitingGit: true, commentOffer: { post: true, action: true } });
+  assert.equal(await on.run(), 0);
+  assert.equal(on.prompts.length, 2, 'only the answer and the choice to continue');
+  assert.match(on.output(), /Sphinx comments on the pull request once this change is on GitHub\./);
+  assert.ok(on.output().indexOf('Sphinx comments on the pull request') < on.output().indexOf('Continue the push?'));
+  const action = harness({ answers: ['It charges twice'], results: [done()], commentOffer: { post: false, action: true } });
+  await action.run();
+  assert.match(action.output(), /so its Sphinx check shows this\s+commit\s+as\s+unstamped\./);
+  assert.doesNotMatch((await (async () => { const h = harness({ answers: ['It charges twice'], results: [done()] }); await h.run(); return h.output(); })()), /pull request/, 'not a pull request push: nothing is said');
 });
 
 test('a pass that needed no questions asks before a waiting Git operation continues, and nothing is asked when none waits', async () => {

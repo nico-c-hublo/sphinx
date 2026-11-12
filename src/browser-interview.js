@@ -118,8 +118,10 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Distance is part of the check's policy, so it is written only when this check ends.
   let distance = null;
   const afterClose = [];
-  // Whether to post the Sphinx stamp to the pull request, per checkpoint; read by the Git hook after a pass.
-  let stamp = null; const stampChoices = new Map();
+  // Whether to comment on the pull request when the check is stamped, shown to the page as
+  // state.stamp. A click is saved with the check, and only the saved choice decides the
+  // stamp, so a later choice made elsewhere always wins.
+  let commentOffer = null, saveCommentChoice = null;
   // The repository's understanding score, refreshed after every graded answer.
   const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
@@ -151,7 +153,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Display-only updates (change view, evidence) keep the revision, so they
   // never turn an answer already in flight into a stale submission.
   const publish = (next, { display = false } = {}) => {
-    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), ...(repoName ? { repoName } : {}), ...(models ? { models: { groups: models.groups, reviewing: !!reviewAttempt, busy: grading, ...(switching ? { switching } : {}) } } : {}), ...(distance ? { distance: { current: distance.current, next: distance.next, scope: distance.scope } } : {}), ...(stamp ? { stamp } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
+    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), ...(repoName ? { repoName } : {}), ...(models ? { models: { groups: models.groups, reviewing: !!reviewAttempt, busy: grading, ...(switching ? { switching } : {}) } } : {}), ...(distance ? { distance: { current: distance.current, next: distance.next, scope: distance.scope } } : {}), ...(commentOffer ? { stamp: commentOffer } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -210,10 +212,12 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     if (req.headers.origin !== origin || !equal(req.headers['x-sphinx-token'], token) || req.headers['content-type']?.split(';')[0] !== 'application/json') return send(res, 403, { error: 'Forbidden request.' });
     if (new URL(req.url, origin).searchParams.get('stamp') === '1') {
       let post; try { post = JSON.parse(await readBody(req, 256))?.post; } catch { return send(res, 400, { error: 'Invalid choice.' }); }
-      if (!stamp || typeof post !== 'boolean') return send(res, 409, { error: 'There is no pull request stamp to set for this check.' });
-      stamp = { ...stamp, post }; stampChoices.set(state.id, post);
+      if (!commentOffer || typeof post !== 'boolean') return send(res, 409, { error: 'There is no pull request stamp to set for this check.' });
+      // Saved with the check, so the push that stamps it uses it even after this page is gone.
+      if (!(await saveCommentChoice?.(state.id, post).catch(() => false))) return send(res, 503, { error: 'Sphinx could not save this choice. Try again.' });
+      commentOffer = { ...commentOffer, post };
       publish(state, { display: true });
-      return send(res, 200, { stamp });
+      return send(res, 200, { stamp: commentOffer });
     }
     if (new URL(req.url, origin).searchParams.get('distance') === '1') {
       let picked; try { picked = JSON.parse(await readBody(req, 1024))?.distance; } catch { return send(res, 400, { error: 'Invalid distance.' }); }
@@ -386,16 +390,15 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       resumeCommand = !waitingGit ? `sphinx check --browser --id ${request.id}`
         : session.snapshot.event === 'pre-commit' ? 'git commit'
         : target.remote && destination ? `git push ${target.remote} ${source && source !== destination ? `${source}:${destination}` : destination}` : 'git push';
-      stamp = null;
-      // The waiting Git hook posts the stamp after a push, and sphinx check posts it after a
-      // pull request check (--pull-request). Any other check started by hand never offers it.
+      commentOffer = null; saveCommentChoice = null;
+      // The Git hook posts the stamp after a push, and sphinx check after a pull request check
+      // (--pull-request). A push check resumed with no push waiting is offered it too: the
+      // choice is saved, and the push that follows the pass posts it.
       // Only a push can be stamped, so only a push loads the optional GitHub integration.
       const github = session.snapshot.event === 'pre-push' ? await import('./github.js') : null;
-      if (github && (waitingGit || github.pullRequestCheck(session.snapshot)) && await github.pullRequestPush(session.snapshot).catch(() => false)) {
-        const action = await github.usesSphinxAction(request.repoRoot).catch(() => false);
-        stamp = { post: stampChoices.get(request.id) ?? (action || !!config.github?.comment), action };
-        stampChoices.set(request.id, stamp.post);
-      }
+      // The offer starts from the saved choice; only a click saves one.
+      commentOffer = github ? await github.commentOffer(session.snapshot, config, operationEnv).catch(() => null) : null;
+      if (commentOffer) saveCommentChoice = (id, post) => github.saveCommentChoice(id, post, operationEnv);
       const refreshModels = async route => { models = { groups: await modelChoices({ config, env: operationEnv, plans, current: route }).catch(() => []) }; };
       await refreshModels(visible.route);
       // Background preparation reviewing the check is asked to stop (see switchRoute), but another
@@ -594,7 +597,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         afterClose.push(() => loadConfig(undefined, operationEnv).then(saved => saveConfig({ ...saved, models: { small: { provider, model }, medium: { provider, model }, large: { provider, model } } }, operationEnv)));
       }
       if (distance?.next) { const { next } = distance, root = request.repoRoot; afterClose.push(() => setRepositoryDistance(root, next, { env: operationEnv })); }
-      switchModel = null; models = null; distance = null; stamp = null;
+      switchModel = null; models = null; distance = null; commentOffer = null; saveCommentChoice = null;
       active = undefined;
     }
   }
@@ -611,6 +614,5 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     }
   }
-  // stampChoice(id): the human's choice to post a checkpoint's stamp to its PR, or undefined when not offered.
-  return { present, close, stampChoice: id => stampChoices.get(id), get url() { return url; }, get state() { return structuredClone(state); } };
+  return { present, close, get url() { return url; }, get state() { return structuredClone(state); } };
 }
