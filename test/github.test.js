@@ -6,7 +6,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, saveStampChoice, savedStampChoice, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, saveCommentChoice, savedCommentChoice, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -70,15 +70,15 @@ test('a choice saved by a page or terminal that has since exited decides the com
     assert.equal(await scheduleStamp({ snapshot: checked, session: saved, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
     return JSON.parse(await readFile(calls[0][1][1], 'utf8')).comment;
   };
-  assert.equal(await savedStampChoice(id, env), undefined);
+  assert.equal(await savedCommentChoice(id, env), undefined);
   assert.equal(await comment(), false, 'nothing chosen: github.comment decides');
-  assert.equal(await saveStampChoice(id, true, env), true);
-  assert.equal(await savedStampChoice(id, env), true);
+  assert.equal(await saveCommentChoice(id, true, env), true);
+  assert.equal(await savedCommentChoice(id, env), true);
   assert.equal(await comment(), true, 'the Git hook of a later push has no page, and uses the saved choice');
-  assert.equal(await saveStampChoice(id, false, env), true);
+  assert.equal(await saveCommentChoice(id, false, env), true);
   assert.equal(await comment(), false, 'the choice saved last wins, whichever process made it');
-  assert.equal(await saveStampChoice('../escape', true, env), false, 'only a checkpoint ID names a file');
-  assert.equal(await saveStampChoice(id, 'yes', env), false);
+  assert.equal(await saveCommentChoice('../escape', true, env), false, 'only a checkpoint ID names a file');
+  assert.equal(await saveCommentChoice(id, 'yes', env), false);
 });
 
 function fakeGh(responses) {
@@ -171,8 +171,8 @@ test('a repository running the Sphinx Action gets the comment instead of a commi
   assert.deepEqual([job.status, job.comment], [false, true]);
   calls.length = 0;
   const chosen = { ...session, id: 'c'.repeat(64) };
-  await saveStampChoice(chosen.id, false, env);
-  await scheduleStamp({ snapshot: { ...snapshot, repoRoot }, session: chosen, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) });
+  await saveCommentChoice(chosen.id, false, env);
+  await scheduleStamp({ snapshot: { ...snapshot, repoRoot, id: chosen.id }, session: chosen, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) });
   assert.equal(calls.length, 0, 'turning the toggle off posts nothing');
 });
 

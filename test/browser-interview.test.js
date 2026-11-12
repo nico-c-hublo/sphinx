@@ -776,7 +776,7 @@ test('the page shows the question distance and saves a repository change only wh
 });
 
 test('a push that may be a pull request offers posting the stamp there, and the choice is saved for the push that stamps it', async t => {
-  const { savedStampChoice, stampOffer } = await import('../src/github.js');
+  const { savedCommentChoice, commentOffer } = await import('../src/github.js');
   const feature = { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } };
   const toggle = (f, post) => fetch(`${f.interview.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': new URL(f.interview.url).pathname.slice(1) }, body: JSON.stringify({ post }) });
   const pr = await fixture(t, { snapshotOverrides: feature });
@@ -784,7 +784,7 @@ test('a push that may be a pull request offers posting the stamp there, and the 
   assert.deepEqual(pr.interview.state.stamp, { post: false, action: false });
   assert.equal((await toggle(pr, 'yes')).status, 409);
   assert.equal((await toggle(pr, true)).status, 200);
-  assert.equal(await savedStampChoice(pr.snapshot.id, pr.env), true, 'saved on disk, not only in this process');
+  assert.equal(await savedCommentChoice(pr.snapshot.id, pr.env), true, 'saved on disk, not only in this process');
   const main = await fixture(t);
   main.present(); await main.waitFor('question');
   assert.equal(main.interview.state.stamp, undefined, 'a push to main is not a pull request');
@@ -795,21 +795,21 @@ test('a push that may be a pull request offers posting the stamp there, and the 
   resumed.present(request); await resumed.waitFor('question');
   assert.deepEqual(resumed.interview.state.stamp, { post: false, action: false }, 'offered although no Git operation waits');
   assert.equal((await toggle(resumed, true)).status, 200);
-  assert.deepEqual(await stampOffer(await resumed.store.read(resumed.snapshot.id), resumed.config, resumed.env), { post: true, action: false }, 'a later page or terminal starts from the saved choice');
+  assert.deepEqual(await commentOffer(resumed.snapshot, resumed.config, resumed.env), { post: true, action: false }, 'a later page or terminal starts from the saved choice');
 });
 
 test('only the saved choice decides the stamp, so a later one made elsewhere outranks this page', async t => {
-  const { saveStampChoice, savedStampChoice } = await import('../src/github.js');
+  const { saveCommentChoice, savedCommentChoice } = await import('../src/github.js');
   const f = await fixture(t, { snapshotOverrides: { target: { remote: 'origin', url: 'https://github.com/acme/widgets.git', ref: 'refs/heads/feature' } } });
   const toggle = post => fetch(`${f.interview.url}/action?stamp=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': new URL(f.interview.url).pathname.slice(1) }, body: JSON.stringify({ post }) });
   f.present(); await f.waitFor('question');
   assert.deepEqual(f.interview.state.stamp, { post: false, action: false }, 'shown from the default');
-  assert.equal(await savedStampChoice(f.snapshot.id, f.env), undefined, 'the default shown is not a choice');
+  assert.equal(await savedCommentChoice(f.snapshot.id, f.env), undefined, 'the default shown is not a choice');
   assert.equal(f.interview.stampChoice, undefined, 'the page keeps no choice of its own for the push to read');
   // A click on this page, then sphinx check --no-comment (or another page) for the same check.
   assert.equal((await toggle(true)).status, 200);
-  await saveStampChoice(f.snapshot.id, false, f.env);
-  assert.equal(await savedStampChoice(f.snapshot.id, f.env), false, 'the later choice is the one the push stamps with');
+  await saveCommentChoice(f.snapshot.id, false, f.env);
+  assert.equal(await savedCommentChoice(f.snapshot.id, f.env), false, 'the later choice is the one the push stamps with');
 });
 
 test('a paused push shows the exact command that resumes it', async t => {

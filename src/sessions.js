@@ -3,7 +3,7 @@ import { REVIEWER_PRESETS } from './model-presets.js';
 import { recordAnswer, recordCheck } from './stats.js';
 import { withUsageMeter, withUsagePurpose, addUsage } from './usage.js';
 import { mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
-import { DEFAULT_CONFIG, getPaths, readJson, writeJson, policyHash } from './config.js';
+import { DEFAULT_CONFIG, getPaths, isCheckpointId, readJson, writeJson, policyHash } from './config.js';
 import { selectRoute, evaluatorConfig, questionLimit } from './routing.js';
 import { generateAssessment, gradeAnswer, MODEL_OUTPUT_ERRORS } from './evaluator.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -11,8 +11,12 @@ import { hasPreferences } from './repo-context.js';
 
 const now = () => new Date().toISOString();
 export function sessionFile(id, env = process.env) {
-  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid assessment ID. Run sphinx pending to find it.');
+  if (!isCheckpointId(id)) throw new Error('Invalid assessment ID. Run sphinx pending to find it.');
   return path.join(getPaths(env).sessions, `${id}.json`);
+}
+/** Whether a checkpoint with this ID is on disk. False for anything that is not a checkpoint ID. */
+export async function checkpointExists(id, env = process.env) {
+  try { return !!(await stat(sessionFile(id, env))); } catch { return false; }
 }
 // A model switch waiting for a check asks the review holding it to stop, naming that hold's lock record.
 // Only background preparation listens (prepare's stoppable), so a request naming any other hold,

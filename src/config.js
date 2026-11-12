@@ -46,6 +46,9 @@ export function getPaths(env = process.env) {
   };
 }
 
+/** Whether this is a checkpoint ID (a SHA-256 hex digest), and so safe to name a file with. */
+export const isCheckpointId = id => /^[a-f0-9]{64}$/.test(String(id));
+
 export async function readJson(file, fallback) {
   let handle;
   try {

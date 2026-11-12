@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getPaths, readJson, writeJson } from './config.js';
+import { getPaths, isCheckpointId, readJson, writeJson } from './config.js';
 
 // After Git continues, a detached worker marks the pushed commit on GitHub with
 // a `sphinx/understanding` commit status and, if the user opts in, keeps one
@@ -19,45 +19,48 @@ const WORKER = fileURLToPath(new URL('./github-worker.js', import.meta.url));
 const digest = value => createHash('sha256').update(value).digest('hex');
 const githubDirectory = env => path.join(getPaths(env).home, 'github');
 const branchFile = (repoRoot, ref, env) => path.join(githubDirectory(env), 'branches', `${digest(`${repoRoot}\0${ref}`)}.json`);
-// Checkpoint IDs are hex digests; anything else never names a file.
-const choiceFile = (id, env) => /^[0-9a-f]{16,128}$/.test(String(id)) ? path.join(githubDirectory(env), 'choices', `${id}.json`) : null;
+// One `<checkpoint id>.json` per saved choice; anything but a checkpoint ID never names a file.
+// Cleanup in storage.js removes a choice once its checkpoint is gone.
+const commentChoiceFile = (id, env) => isCheckpointId(id) ? path.join(githubDirectory(env), 'choices', `${id}.json`) : null;
 
 /**
  * The human's choice to comment on the pull request when a checkpoint is stamped. It is
  * kept on disk, not in the process that asked: the push that stamps may come from another
  * process, after the one holding the page or the terminal check has exited.
  */
-export async function saveStampChoice(id, post, env = process.env) {
-  const file = choiceFile(id, env);
-  if (!file || typeof post !== 'boolean') return false;
-  await writeJson(file, { version: 1, post });
+export async function saveCommentChoice(id, comment, env = process.env) {
+  const file = commentChoiceFile(id, env);
+  if (!file || typeof comment !== 'boolean') return false;
+  await writeJson(file, { version: 1, post: comment });
   return true;
 }
 
 /** The saved choice to comment, or undefined when none was made. Never throws. */
-export async function savedStampChoice(id, env = process.env) {
-  const file = choiceFile(id, env);
+export async function savedCommentChoice(id, env = process.env) {
+  const file = commentChoiceFile(id, env);
   const saved = file ? await readJson(file, null).catch(() => null) : null;
   return typeof saved?.post === 'boolean' ? saved.post : undefined;
 }
 
 /**
- * Whether a pass of this check can comment on a pull request, and what is chosen so far:
- * the saved choice, else the Sphinx Action or github.comment. Null when it cannot. Offered
- * whether or not Git waits: a pass made with no push waiting stamps the push that follows.
+ * Whether a pass of this check can comment on a pull request, and what is chosen so far, as
+ * { post, action }. Null when it cannot. Offered whether or not Git waits: a pass made with
+ * no push waiting stamps the push that follows.
  */
-export async function stampOffer(session, config, env = process.env) {
-  const snapshot = session?.snapshot;
+export async function commentOffer(snapshot, config, env = process.env) {
   if (snapshot?.event !== 'pre-push' || !(await pullRequestPush(snapshot).catch(() => false))) return null;
-  const action = await usesSphinxAction(snapshot.repoRoot).catch(() => false);
-  return { post: await commentChoice(session.id, { action, config, env }), action };
+  const { action, comment } = await commentDecision(snapshot, config, env);
+  return { post: comment, action };
 }
 
 // Whether a stamp comments on the pull request: the choice saved with the check (by the page or
 // sphinx check --comment), else the Sphinx Action or github.comment. No process keeps its own
-// copy, so whichever choice was saved last decides, whatever process stamps.
-async function commentChoice(id, { action, config, env }) {
-  return (await savedStampChoice(id, env)) ?? (action || !!config.github?.comment);
+// copy, so whichever choice was saved last decides, whatever process stamps. With the Sphinx
+// Action, its check run replaces the commit status and reads the comment.
+async function commentDecision(snapshot, config, env) {
+  const action = await usesSphinxAction(snapshot.repoRoot).catch(() => false);
+  const comment = (await savedCommentChoice(snapshot.id, env)) ?? (action || !!config.github?.comment);
+  return { action, comment };
 }
 
 /** owner/repo on a GitHub host from an https, ssh, or scp-style remote URL. */
@@ -179,9 +182,7 @@ export async function scheduleStamp({ snapshot, session, outcome, config, env = 
     const settings = config.github || {};
     const target = stampTarget(snapshot);
     if (!target) return false;
-    // With the Sphinx Action, its check run replaces the commit status and reads the comment.
-    const action = await usesSphinxAction(snapshot.repoRoot);
-    const comment = await commentChoice(session?.id ?? snapshot.id, { action, config, env });
+    const { action, comment } = await commentDecision(snapshot, config, env);
     const status = !!settings.status && !action;
     if (!status && !comment) return false;
     const file = branchFile(snapshot.repoRoot, target.key, env);
