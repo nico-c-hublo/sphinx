@@ -101,8 +101,10 @@ function commandsLine(terminal, { waitingGit }) {
  * quit, or stopped before a pass, 3 when the human skipped a waiting Git
  * operation, and 4 when they passed and then stopped that waiting operation.
  * With more checks to follow in the same push, a pass does not ask yet.
+ * stamp, for a push that may be a pull request: { post, action }. After a pass one line says
+ * whether Sphinx comments on the pull request; the terminal never asks (see sphinx check --comment).
  */
-export async function runTerminalCheck({ store, session, config, ask, terminal: base, stream = process.stdout, signal, waitingGit = false, more = false, planProviders = [], validate, choose, skip, env = process.env }) {
+export async function runTerminalCheck({ store, session, config, ask, terminal: base, stream = process.stdout, signal, waitingGit = false, more = false, planProviders = [], validate, choose, skip, stamp = null, env = process.env }) {
   // Lines keep their own indentation; the shared helpers would rewrap it away.
   const terminal = { ...base, line: text => stream.write(`${text}\n`), note: text => stream.write(`${base.style.muted(`  ${text}`)}\n`), warning: text => stream.write(`  ${base.style.amber('!')} ${text}\n`) };
   const { style } = terminal;
@@ -139,11 +141,11 @@ export async function runTerminalCheck({ store, session, config, ask, terminal: 
   // only the choice to continue remains. (A pass made here is held too, until Git sees continue.)
   if (state.status === 'passed' && session.held) {
     terminal.line(''); mark(terminal, style.green('✓'), `${state.noQuestionReason ? 'This change needed no questions' : 'You passed this change'} earlier, but that ${op} did not go through.`);
-    return finish(terminal, { waitingGit, more, ask, event });
+    return finish(terminal, { waitingGit, more, ask, event, stamp });
   }
   if (state.status === 'passed' && state.noQuestionReason) {
     terminal.line(''); mark(terminal, style.green('✓'), `No questions needed: ${plain(state.noQuestionReason)}`);
-    return finish(terminal, { waitingGit, more, ask, event });
+    return finish(terminal, { waitingGit, more, ask, event, stamp });
   }
 
   let shownId = null, shownNumber = 0, shownDraft = null;
@@ -206,12 +208,13 @@ export async function runTerminalCheck({ store, session, config, ask, terminal: 
   const final = await score().catch(() => null);
   const line = scoreLine(final, style);
   if (line) terminal.line(line);
-  return finish(terminal, { waitingGit, more, ask, event });
+  return finish(terminal, { waitingGit, more, ask, event, stamp });
 }
 
 // After a pass, a waiting Git operation goes through only when the human says so.
-async function finish(terminal, { waitingGit, more, ask, event }) {
+async function finish(terminal, { waitingGit, more, ask, event, stamp }) {
   const { style } = terminal, [op, Op] = words(event);
+  noteStamp(terminal, stamp);
   if (waitingGit && !more) {
     terminal.line('');
     terminal.line(`  ${style.strong(`Continue the ${op}?`)}`);
@@ -231,6 +234,16 @@ async function finish(terminal, { waitingGit, more, ask, event }) {
   terminal.line(style.muted(wrapText(!waitingGit ? 'Approval saved for this exact change and destination. A waiting push or commit goes through once you choose Continue in its questionnaire.' : more ? `Approval saved. This ${op} has another destination to check next.` : 'Approval saved. Git is continuing.', terminal.width, '  ')));
   terminal.line('');
   return 0;
+}
+
+// The page's checkbox, as one line: the terminal does not ask, so a pass costs no extra step.
+// The choice comes from sphinx check --comment or --no-comment, the page, or github.comment.
+function noteStamp(terminal, stamp) {
+  if (!stamp) return;
+  terminal.line('');
+  terminal.line(terminal.style.muted(wrapText(stamp.post
+    ? 'Sphinx comments on the pull request once this change is on GitHub. sphinx check --no-comment turns it off for this check.'
+    : `No comment on the pull request${stamp.action ? ', so its Sphinx check shows this commit as unstamped' : ''}. sphinx check --comment posts one for this check; github.comment posts one for every check.`, terminal.width, '  ')));
 }
 
 function printVerdict(terminal, state, { learn, dispute }) {

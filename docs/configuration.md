@@ -272,6 +272,8 @@ When you push to GitHub and a check passes, Sphinx marks the pushed commit with 
 
 A pull request checked with `sphinx check --pull-request` is stamped the same way when you pass, since no push follows it: its head commit gets the commit status, and the comment goes on that pull request, in its base repository. The browser page offers "Post the Sphinx stamp to the pull request" for it, as it does for a push. Each pull request keeps its own comment, even when several share a base branch.
 
+The page offers this for any push to a pull request branch, including a check you resume with `sphinx check --id` after its `git push` has exited. A terminal check doesn't ask: after you pass, it says whether a comment will be posted. To choose for one check, pass `sphinx check --comment` or `--no-comment`; the page's checkbox starts from that choice too. The choice is saved with the check, so the push that goes through on that pass uses it even after the process that took the choice has exited. The last choice saved wins. Without a choice, `github.comment` decides, or the Sphinx Action when the repository has it (see below).
+
 ```json
 { "github": { "status": true, "comment": false, "answers": false } }
 ```
@@ -299,7 +301,8 @@ How it fits together:
 - **On the contributor's machine:** after a pass, Sphinx comments on the branch's pull request with a summary and an encoded stamp for that exact commit. For a pull request from a fork, the comment goes on the upstream pull request. The questionnaire shows "Post the Sphinx stamp to the pull request" for pushes that look like a pull request (a GitHub remote, not its default branch). It is on by default when the repository has the Sphinx workflow, and otherwise follows `github.comment`.
 - **In the repository:** the Action runs when a pull request is opened or updated and when a comment is posted or edited. It reads the newest stamp for the pull request's latest commit, from the author or someone with write access, and writes the **Sphinx** check: stamped, with the number of questions, first-try results, depth, distance, and reviewer; failed if the check was skipped; or neutral ("No Sphinx stamp for this commit") until the author passes. With `require: true` in the workflow, a missing stamp fails the check instead.
 - **Safety:** the workflow uses `pull_request_target` and `issue_comment` so it can write checks for fork pull requests, and it never checks out or runs pull request code. It reads comments through the API only. It needs `checks: write` and read access to pull requests and issues.
-- When a repository runs the Action, Sphinx skips the separate commit status, since the check replaces it.
+- When a repository runs the Action, Sphinx skips the separate commit status, since the check replaces it. So choosing not to comment (unticking the box, or `sphinx check --no-comment`) posts nothing at all: the **Sphinx** check shows the commit as unstamped, and fails it with `require: true`.
+- Sphinx decides that a repository runs the Action from its `.github/workflows` files, not from GitHub. In a fork where Actions are not enabled yet, the commit gets neither the status nor the check until you enable them in the fork's Actions tab.
 
 The workflow pins the Action to a Sphinx release tag (`parthh01/sphinx/action@v0.1.12`, for example). Any repository can use it; the path only says where the Action's code lives.
 

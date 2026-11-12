@@ -118,8 +118,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Distance is part of the check's policy, so it is written only when this check ends.
   let distance = null;
   const afterClose = [];
-  // Whether to post the Sphinx stamp to the pull request, per checkpoint; read by the Git hook after a pass.
-  let stamp = null; const stampChoices = new Map();
+  // Whether to post the Sphinx stamp to the pull request. A click is saved with the check, and
+  // only the saved choice decides the stamp, so a later choice made elsewhere always wins.
+  let stamp = null, stampSave = null;
   // The repository's understanding score, refreshed after every graded answer.
   const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
@@ -211,7 +212,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     if (new URL(req.url, origin).searchParams.get('stamp') === '1') {
       let post; try { post = JSON.parse(await readBody(req, 256))?.post; } catch { return send(res, 400, { error: 'Invalid choice.' }); }
       if (!stamp || typeof post !== 'boolean') return send(res, 409, { error: 'There is no pull request stamp to set for this check.' });
-      stamp = { ...stamp, post }; stampChoices.set(state.id, post);
+      // Saved with the check, so the push that stamps it uses it even after this page is gone.
+      if (!(await stampSave?.(state.id, post).catch(() => false))) return send(res, 503, { error: 'Sphinx could not save this choice. Try again.' });
+      stamp = { ...stamp, post };
       publish(state, { display: true });
       return send(res, 200, { stamp });
     }
@@ -386,15 +389,17 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       resumeCommand = !waitingGit ? `sphinx check --browser --id ${request.id}`
         : session.snapshot.event === 'pre-commit' ? 'git commit'
         : target.remote && destination ? `git push ${target.remote} ${source && source !== destination ? `${source}:${destination}` : destination}` : 'git push';
-      stamp = null;
-      // The waiting Git hook posts the stamp after a push, and sphinx check posts it after a
-      // pull request check (--pull-request). Any other check started by hand never offers it.
+      stamp = null; stampSave = null;
+      // The Git hook posts the stamp after a push, and sphinx check after a pull request check
+      // (--pull-request). A push check resumed with no push waiting is offered it too: the
+      // choice is saved, and the push that follows the pass posts it.
       // Only a push can be stamped, so only a push loads the optional GitHub integration.
       const github = session.snapshot.event === 'pre-push' ? await import('./github.js') : null;
-      if (github && (waitingGit || github.pullRequestCheck(session.snapshot)) && await github.pullRequestPush(session.snapshot).catch(() => false)) {
-        const action = await github.usesSphinxAction(request.repoRoot).catch(() => false);
-        stamp = { post: stampChoices.get(request.id) ?? (action || !!config.github?.comment), action };
-        stampChoices.set(request.id, stamp.post);
+      const offer = github ? await github.stampOffer(session, config, operationEnv).catch(() => null) : null;
+      if (offer) {
+        // The offer starts from the saved choice; only a click saves one.
+        stamp = offer;
+        stampSave = (id, post) => github.saveStampChoice(id, post, operationEnv);
       }
       const refreshModels = async route => { models = { groups: await modelChoices({ config, env: operationEnv, plans, current: route }).catch(() => []) }; };
       await refreshModels(visible.route);
@@ -594,7 +599,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         afterClose.push(() => loadConfig(undefined, operationEnv).then(saved => saveConfig({ ...saved, models: { small: { provider, model }, medium: { provider, model }, large: { provider, model } } }, operationEnv)));
       }
       if (distance?.next) { const { next } = distance, root = request.repoRoot; afterClose.push(() => setRepositoryDistance(root, next, { env: operationEnv })); }
-      switchModel = null; models = null; distance = null; stamp = null;
+      switchModel = null; models = null; distance = null; stamp = null; stampSave = null;
       active = undefined;
     }
   }
@@ -611,6 +616,5 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     }
   }
-  // stampChoice(id): the human's choice to post a checkpoint's stamp to its PR, or undefined when not offered.
-  return { present, close, stampChoice: id => stampChoices.get(id), get url() { return url; }, get state() { return structuredClone(state); } };
+  return { present, close, get url() { return url; }, get state() { return structuredClone(state); } };
 }

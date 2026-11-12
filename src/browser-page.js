@@ -234,7 +234,7 @@ document.onvisibilitychange=titleView;
 function stampView(state){
  const s=state.stamp,row=$('stamp-row');row.hidden=!s||finished;if(row.hidden)return;
  $('stamp').checked=!!s.post;
- row.title=(s.action?'This repository shows a Sphinx check on pull requests. ':'')+'After you pass, Sphinx comments on this branch\u2019s pull request with a summary: how many questions, which you got right first time, and the model.'+(s.action?' The Sphinx check reads it.':'')+' Your answers are not included unless you turn that on in your settings.';
+ row.title=(s.action?'This repository shows a Sphinx check on pull requests. ':'')+'Once you pass and the change is on GitHub, Sphinx comments on its pull request with a summary: how many questions, which you got right first time, and the model.'+(s.action?' The Sphinx check reads it: unticked, nothing is posted and the check shows this commit as unstamped.':'')+' Your answers are not included unless you turn that on in your settings.';
 }
 $('stamp').onchange=async()=>{const want=$('stamp').checked;try{const res=await fetch(base+'/action?stamp=1',{method:'POST',headers:{'Content-Type':'application/json','X-Sphinx-Token':token},body:JSON.stringify({post:want})});if(!res.ok)$('stamp').checked=!want;}catch{$('stamp').checked=!want;}};
 // The question distance: shown as a chip, explained in its tooltip, and changeable

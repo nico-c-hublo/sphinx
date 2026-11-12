@@ -6,7 +6,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, saveStampChoice, savedStampChoice, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -60,6 +60,25 @@ test('stamping is skipped for other hosts, commits, and when turned off, and nev
   assert.equal(calls[0][2].detached, true);
   const job = JSON.parse(await readFile(calls[0][1][1], 'utf8'));
   assert.deepEqual({ ...job, branchFile: undefined }, { version: 1, repo: { host: 'github.com', owner: 'acme', repo: 'widgets' }, sha: snapshot.head, branch: 'feature', branchFile: undefined, status: true, comment: false });
+});
+
+test('a choice saved by a page or terminal that has since exited decides the comment of the push that stamps the check', async t => {
+  const env = await home(t), calls = [];
+  const id = 'c'.repeat(64), checked = { ...snapshot, id }, saved = { ...session, id };
+  const comment = async () => {
+    calls.length = 0;
+    assert.equal(await scheduleStamp({ snapshot: checked, session: saved, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) }), true);
+    return JSON.parse(await readFile(calls[0][1][1], 'utf8')).comment;
+  };
+  assert.equal(await savedStampChoice(id, env), undefined);
+  assert.equal(await comment(), false, 'nothing chosen: github.comment decides');
+  assert.equal(await saveStampChoice(id, true, env), true);
+  assert.equal(await savedStampChoice(id, env), true);
+  assert.equal(await comment(), true, 'the Git hook of a later push has no page, and uses the saved choice');
+  assert.equal(await saveStampChoice(id, false, env), true);
+  assert.equal(await comment(), false, 'the choice saved last wins, whichever process made it');
+  assert.equal(await saveStampChoice('../escape', true, env), false, 'only a checkpoint ID names a file');
+  assert.equal(await saveStampChoice(id, 'yes', env), false);
 });
 
 function fakeGh(responses) {
@@ -151,7 +170,9 @@ test('a repository running the Sphinx Action gets the comment instead of a commi
   const job = JSON.parse(await readFile(calls[0][1].at(-1), 'utf8'));
   assert.deepEqual([job.status, job.comment], [false, true]);
   calls.length = 0;
-  await scheduleStamp({ snapshot: { ...snapshot, repoRoot }, session, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls), post: false });
+  const chosen = { ...session, id: 'c'.repeat(64) };
+  await saveStampChoice(chosen.id, false, env);
+  await scheduleStamp({ snapshot: { ...snapshot, repoRoot }, session: chosen, outcome: 'passed', config: config({}), env, spawnImpl: fakeSpawn(calls) });
   assert.equal(calls.length, 0, 'turning the toggle off posts nothing');
 });
 
