@@ -269,7 +269,7 @@ $('distance').onclick=()=>{if(distanceOpen){closeDistance();return;}closeMenu();
 // A newer release is offered quietly; installing waits until this check ends.
 function updateView(u){const b=$('update');if(!u?.available){b.hidden=true;return;}b.hidden=false;
  if(u.status==='scheduled'){b.textContent='Updating to v'+u.latest+' after this check';b.disabled=true;b.title='';}
- else if(u.status==='failed'){b.textContent='Update could not start';b.disabled=true;b.title='Run '+(u.command||'npm install -g sphinx-understand@latest')+' in a terminal.';}
+ else if(u.status==='failed'){b.textContent='Update could not start';b.disabled=true;b.title='Run '+(u.command||'npm install -g github:nico-c-hublo/sphinx')+' in a terminal.';}
  else if(!u.command){b.textContent='v'+u.latest+' available';b.disabled=true;b.title=u.note||'';}
  else{b.textContent='v'+u.latest+' available · Update';b.disabled=false;b.title='Runs '+u.command+' once this check finishes. Your settings are kept.';}}
 $('update').onclick=async()=>{const b=$('update');b.disabled=true;b.textContent='Scheduling update…';

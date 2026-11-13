@@ -429,8 +429,8 @@ test('a rate limit while grading offers the coding-agent plan, then the same que
 test('a newer release is offered in the header and installs only after the check ends', async t => {
   const started = [];
   const f = await fixture(t, { interviewOptions: {
-    checkUpdate: async () => ({ current: '0.1.7', latest: '0.1.9', available: true, command: 'npm install -g sphinx-understand@latest', note: null }),
-    planUpdate: async () => ({ manager: 'npm', command: ['npm', 'install', '-g', 'sphinx-understand@latest'] }),
+    checkUpdate: async () => ({ current: '0.1.7', latest: '0.1.9', available: true, command: 'npm install -g github:nico-c-hublo/sphinx', note: null }),
+    planUpdate: async () => ({ manager: 'npm', command: ['npm', 'install', '-g', 'github:nico-c-hublo/sphinx'] }),
     startUpdate: async options => { started.push(options); return true; },
   } });
   f.present(); await f.waitFor('question');
@@ -443,7 +443,7 @@ test('a newer release is offered in the header and installs only after the check
   const token = new URL(f.interview.url).pathname.slice(1);
   const res = await fetch(`${f.interview.url}/action?update=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': token }, body: '{}' });
   assert.equal(res.status, 200); assert.equal((await res.json()).update.status, 'scheduled');
-  assert.deepEqual(started[0].command, ['npm', 'install', '-g', 'sphinx-understand@latest']);
+  assert.deepEqual(started[0].command, ['npm', 'install', '-g', 'github:nico-c-hublo/sphinx']);
   assert.equal(f.interview.state.phase, 'question', 'updating never interrupts the check');
   const again = await fetch(`${f.interview.url}/action?update=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': token }, body: '{}' });
   assert.equal(again.status, 409); assert.equal(started.length, 1);

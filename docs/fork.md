@@ -40,9 +40,9 @@ sphinx install
 
 This command also replaces an existing upstream install, because the package name is the same. Your settings in `~/.config/sphinx` are kept. Run `sphinx install` again afterwards so the hooks and agent integrations match the new copy. To update, run the same `npm install -g github:nico-c-hublo/sphinx`. To work from a checkout, run `npm install -g .` in it and update with `git pull`.
 
-> **Don't use the questionnaire's update button.** The page compares your version with npm's `latest` and offers to run `npm install -g sphinx-understand@latest`. That would replace the fork with upstream and drop every change below. Once upstream publishes a version above the fork's, the button appears on every check. To hide it, set `SPHINX_UPDATE_CHECK=0` in your shell profile.
+The questionnaire's update button follows the fork too. It compares your version with `version` in `package.json` on this fork's `main` and, when that version is higher, runs `npm install -g github:nico-c-hublo/sphinx` (or the pnpm or Bun equivalent) after the check ends. Upstream's version checks npm instead, so a copy installed before this change could offer upstream's release. Reinstall from GitHub once to get the fork's version. `SPHINX_UPDATE_CHECK=0` turns the check off.
 
-The fork publishes nothing to npm. The release job in `.github/workflows/test.yml` runs only in `parthh01/sphinx`.
+The fork publishes nothing to npm. The release job in `.github/workflows/test.yml` runs only in `parthh01/sphinx`. Merging into `main` doesn't trigger the update button. To offer the team an update, raise `version` in `package.json` (and `package-lock.json`) in the pull request.
 
 ## Recommended setup
 
@@ -79,6 +79,7 @@ Each change has its own pull request with the full reasoning. The [configuration
 | **Browser page for `sphinx check`** ([#1](https://github.com/nico-c-hublo/sphinx/pull/1)) | `sphinx check` follows the `interface` setting, as a push does, instead of always using the terminal. `--browser` and `--terminal` choose for one run. With no Git operation waiting, the page ends when you pass or pause, and offers no skip. | [Browser or terminal](configuration.md#browser-or-terminal) |
 | **Saved pull request comment choice** ([#4](https://github.com/nico-c-hublo/sphinx/pull/4)) | The "Post the Sphinx stamp to the pull request" choice is saved with the check, so it survives the process that asked, for example when `git push` exited before you finished. `sphinx check --comment` / `--no-comment` set it from the terminal. The choice is removed together with its check. | [GitHub stamps](configuration.md#github-commit-status-and-pull-requests) |
 | **Working-context model route** ([#5](https://github.com/nico-c-hublo/sphinx/pull/5)) | `models.context` (`sphinx config --context-model <provider:model>`) runs the working-context curator on its own model, so a cheaper curator doesn't change how small changes are checked. `--context-model small` clears it. | [Working context](configuration.md#working-context) |
+| **Updates from GitHub** ([#8](https://github.com/nico-c-hublo/sphinx/pull/8)) | The questionnaire's update button checks this fork's `main` and installs from GitHub. It used to check npm, where it would have installed upstream over the fork. | [Install the fork](#install-the-fork) |
 | **Hooks folder fix** ([#3](https://github.com/nico-c-hublo/sphinx/pull/3)) | A reinstall could chain Sphinx's own hooks folder to itself, which made `git fetch`, `commit`, and `checkout` hang. Hooks folders are now compared by real path, the way Git resolves them. Uninstall warns when it restores a folder that no longer exists. | [Architecture](architecture.md#installation) |
 
 ## Compatibility with upstream
@@ -100,4 +101,4 @@ git log --oneline main..upstream/main   # upstream changes not merged yet
 git log --oneline upstream/main..main   # this fork's changes
 ```
 
-Merge upstream into a branch, run `npm test`, and open a pull request against this fork's `main`. The changes listed above are the parts of the code most likely to conflict.
+Merge upstream into a branch, run `npm test`, and open a pull request against this fork's `main`. The changes listed above are the parts of the code most likely to conflict. Keep `src/update.js` pointing at this fork. Upstream's version bumps come along with the merge, so check that the fork's `version` ends up higher than the one the team has installed.
