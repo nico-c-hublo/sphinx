@@ -283,18 +283,24 @@ export function ghCli(args, { env = process.env, host, input, cwd, timeoutMs = 3
 const GH_MISSING = '--pull-request needs the GitHub CLI (gh). Install it and sign in with gh auth login, then retry.';
 const GH_SIGNED_OUT = '--pull-request needs the GitHub CLI (gh) signed in. Run gh auth login, then retry.';
 
+// gh exits 4 when a command needs authentication, and its sign-in advice names gh auth login.
+// Any other failure (offline, GitHub unreachable, a timeout) says nothing about the login.
+const ghSignedOut = result => result.code === 4 || /gh auth login/.test(result.stderr || '');
+
 /**
- * Whether gh can find pull requests here: 'ok', 'missing' (not installed), or 'signed-out'.
+ * Whether gh can find pull requests here: 'ok', 'missing' (not installed), 'signed-out',
+ * or 'unverified' (gh ran but could not confirm its login, for example while offline).
  * For setup warnings and sphinx doctor only; gh auth status may contact GitHub.
  */
 export async function ghReadiness({ cwd, env = process.env, gh = ghCli } = {}) {
   const result = await gh(['auth', 'status'], { env, cwd, timeoutMs: 10000 });
-  return result.missing ? 'missing' : result.ok ? 'ok' : 'signed-out';
+  return result.missing ? 'missing' : result.ok ? 'ok' : ghSignedOut(result) ? 'signed-out' : 'unverified';
 }
 
 export const GH_READINESS_TEXT = {
   missing: 'The GitHub CLI (gh) is not installed. On-demand mode uses it to find the pull request: without it, sphinx check --pull-request fails and background preparation cannot prepare the pull request check. Install gh and run gh auth login.',
   'signed-out': 'The GitHub CLI (gh) is not signed in. On-demand mode uses it to find the pull request: until you run gh auth login, sphinx check --pull-request fails and background preparation cannot prepare the pull request check.',
+  unverified: 'The GitHub CLI (gh) could not confirm its login, often because GitHub cannot be reached (offline or a network problem). On-demand mode uses it to find the pull request; run gh auth status once you are online to see whether it is signed in.',
 };
 
 /**
@@ -307,8 +313,8 @@ export const GH_READINESS_TEXT = {
 export async function pullRequestForBranch({ cwd, env = process.env, gh = ghCli } = {}) {
   const viewed = await gh(['pr', 'view', '--json', 'number,url,state,baseRefName,headRefOid'], { env, cwd });
   if (viewed.missing) throw new Error(GH_MISSING);
-  // gh exits 4 when it needs authentication; that is not a missing pull request, so nothing waits for one.
-  if (!viewed.ok && (viewed.code === 4 || /gh auth login/.test(viewed.stderr || ''))) throw new Error(GH_SIGNED_OUT);
+  // A signed-out gh is not a missing pull request, so nothing waits for one.
+  if (!viewed.ok && ghSignedOut(viewed)) throw new Error(GH_SIGNED_OUT);
   if (!viewed.ok) {
     const reason = String(viewed.stderr || '').trim().split('\n').find(Boolean) || 'gh pr view failed';
     throw new Error(`No pull request found for the checked-out branch: ${reason}`);

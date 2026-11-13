@@ -219,7 +219,11 @@ test('gh readiness tells setup and doctor whether on-demand checks can find pull
   const calls = [];
   const gh = result => async (args, options) => { calls.push(args); return { stdout: '', stderr: '', missing: false, ...result }; };
   assert.equal(await ghReadiness({ gh: gh({ ok: true }) }), 'ok');
-  assert.equal(await ghReadiness({ gh: gh({ ok: false, code: 1 }) }), 'signed-out');
+  assert.equal(await ghReadiness({ gh: gh({ ok: false, code: 1, stderr: 'You are not logged into any GitHub hosts. To log in, run: gh auth login\n' }) }), 'signed-out');
+  assert.equal(await ghReadiness({ gh: gh({ ok: false, code: 4 }) }), 'signed-out');
+  // Offline or a timeout is not a missing login: gh ran but could not reach GitHub.
+  assert.equal(await ghReadiness({ gh: gh({ ok: false, code: 1, stderr: 'error connecting to api.github.com\n' }) }), 'unverified');
+  assert.equal(await ghReadiness({ gh: gh({ ok: false, code: null }) }), 'unverified');
   assert.equal(await ghReadiness({ gh: gh({ ok: false, missing: true }) }), 'missing');
   assert.deepEqual(calls[0], ['auth', 'status']);
 });

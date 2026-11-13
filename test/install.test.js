@@ -230,6 +230,8 @@ test('doctor warns when on-demand checks on a GitHub repository cannot use gh, a
   assert.equal(missing.ok, false); assert.match(missing.detail, /not installed.*gh auth login/);
   const signedOut = await ghCheck('signed-out');
   assert.equal(signedOut.ok, false); assert.match(signedOut.detail, /not signed in/);
+  const unverified = await ghCheck('unverified');
+  assert.equal(unverified.ok, false); assert.match(unverified.detail, /could not confirm its login/); assert.doesNotMatch(unverified.detail, /not signed in/);
   assert.equal((await ghCheck('ok')).ok, true);
   f.git('remote', 'set-url', 'origin', 'https://gitlab.com/acme/widgets.git');
   assert.equal(await ghCheck('missing'), undefined, 'A repository with no GitHub remote never uses gh for its checks');
