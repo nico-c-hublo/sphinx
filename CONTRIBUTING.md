@@ -22,6 +22,8 @@ Before proposing a stronger model or additional model calls, measure whether the
 
 ## Releases
 
+> **In this fork** ([nico-c-hublo/sphinx](https://github.com/nico-c-hublo/sphinx)), nothing is released. The `release` job runs only in `parthh01/sphinx`, and the fork is installed from GitHub (see [What this fork changes](docs/fork.md#install-the-fork)). The rest of this section describes upstream.
+
 Every push to `main` that passes the tests is released to npm by the `release` job in `.github/workflows/test.yml`.
 
 The version is the next patch after npm's `latest`, so 0.1.13 is followed by 0.1.14. For a minor or major release, set `version` in `package.json` above npm's `latest` in a normal pull request, and that version is published as it is. Nothing is published at or below npm's `latest`. A version npm already has, or whose `v<version>` tag names another commit, is skipped for the next patch. Each release becomes npm's `latest`, even when npm has a higher version under another tag.

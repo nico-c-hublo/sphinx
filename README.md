@@ -9,7 +9,11 @@
 <p align="center"><b>Works with</b> Claude Code · Codex · Cursor · OpenCode · Pi · or a plain <code>git push</code><br>
 <b>Reviews run on</b> your Claude Code or Codex plan · OpenRouter · any OpenAI-compatible endpoint</p>
 
+> **This is a fork of [parthh01/sphinx](https://github.com/parthh01/sphinx).** Its main addition is **on-demand mode**: Git never waits, and you check the pull request when you're ready with `sphinx check --pull-request`. A pass stamps the pull request on GitHub. Block mode is still the default and works as upstream does. Install the fork from GitHub, not from npm (see [Install](#1-install-required)). [What this fork changes](docs/fork.md) lists every difference, explains why, and covers compatibility with upstream.
+
 Sphinx adds an understanding check to agent-assisted development. When you push to a protected branch, Git waits while Sphinx asks you to predict what your change will do. If you miss something, it explains and gives you another try, usually with a new scenario. Once you pass, the same push continues. This works whether you or a coding agent ran `git push`.
+
+If you'd rather not have Git wait, use [on-demand mode](docs/configuration.md#on-demand-checks). Pushes go straight through, questions are prepared in the background, and you run `sphinx check --pull-request` when the pull request is open. The fork's [recommended setup](docs/fork.md#recommended-setup) walks through it.
 
 The questions come from a separate reviewer model. It reads the committed change through read-only Git tools and does not see the conversation that produced the code.
 
@@ -31,7 +35,7 @@ Questions cover behavior, failure modes, and invariants rather than file names o
 
 - **Requirements.** Node.js 22.19 or newer, Git, and macOS, Linux, or WSL. Native Windows is not supported yet.
 - **It applies to every repository on this machine.** `sphinx install` sets your global Git `core.hooksPath`. Your existing hooks still run first. Right after install, pushes to `main` or `master` in any repository are checked. `sphinx init` lets you adjust that for each repository.
-- **It blocks Git.** A matching push waits until you pass, pause, or skip, for up to 25 minutes. Your coding agent's shell may time out sooner.
+- **It blocks Git by default.** A matching push waits until you pass, pause, or skip, for up to 25 minutes. Your coding agent's shell may time out sooner. In [on-demand mode](docs/configuration.md#on-demand-checks), Git is never blocked and you run the check yourself. That mode needs the GitHub CLI (`gh`), signed in.
 - **You need a reviewer model account.** This can be a signed-in Codex or Claude Code CLI, which uses that plan's allowance. It can also be an OpenRouter API key, which bills separately and is required even for free models, or any [OpenAI-compatible endpoint](docs/configuration.md#openai-compatible-endpoints). Sphinx has no account or hosted service of its own.
 - **Code leaves your machine.** The reviewer provider receives the changed code and related files from the commit, your answers, and `.sphinxcontext.md`. Ignored files are never read, and `.env` files, private keys, and common credential files are excluded by default. Add your own sensitive paths to `.sphinxignore` before your first check. Ignore rules match file paths, so they will not catch a secret pasted into ordinary source.
 - **There is no default cap on model calls.** A typical check makes about 5 to 8 requests, plus about one per answer. You can [set a cap](docs/configuration.md#model-calls-tokens-and-limits), and you should set spending limits with paid providers.
@@ -42,9 +46,11 @@ Questions cover behavior, failure modes, and invariants rather than file names o
 ### 1. Install (required)
 
 ```sh
-npm install -g sphinx-understand
+npm install -g github:nico-c-hublo/sphinx
 sphinx install
 ```
+
+The `sphinx-understand` package on npm is upstream's release, without this fork's changes. Install from GitHub as shown above, and run the same command to update. It also replaces an existing upstream install, and keeps your settings. Don't use the questionnaire's update button: it installs from npm and would bring back upstream. To hide the button, set `SPHINX_UPDATE_CHECK=0` (see [install the fork](docs/fork.md#install-the-fork)).
 
 Guided setup asks which coding agents you use and which reviewer to use. It suggests Sonnet through Claude Code or GPT-6 Luna through Codex. If you choose OpenRouter, it asks for an API key. It then offers the recommended checkpoints (pushes to `main` or `master` at standard depth) or **Customize** to pick events, branches, remotes, and depth. To install without prompts:
 
@@ -90,6 +96,12 @@ To set it up without prompts:
 
 ```sh
 sphinx init --yes --branches main
+```
+
+For a repository where changes reach `main` through pull requests, and you check them there instead of at push time:
+
+```sh
+sphinx init --mode on-demand --branches '*'
 ```
 
 Commit the three files to share the policy with collaborators.
@@ -156,7 +168,7 @@ sphinx config --preset openrouter-value --allow-paid
 
 Context size, output tokens, and review time are always capped. Transient provider errors (rate limits, an OpenRouter route without a JSON-schema provider, brief outages) are retried up to three times with backoff; an answer that still could not be graded is saved for when you resume. For routing thresholds, model tables, pricing, and every limit, see [configuration and cost](docs/configuration.md).
 
-Version 0.1 checks local commits and pushes only. It does not cover web merges, CI-required checks, or deployments. It cannot read binary file contents, and it tests understanding rather than auditing the code. The [evaluation results](eval/RESULTS.md) record question quality, grading errors, and costs on synthetic changes. They do not certify arbitrary repositories.
+Version 0.1 checks local commits, pushes, and, with `sphinx check --pull-request`, open pull requests checked out locally. It does not cover web merges, CI-required checks, or deployments. It cannot read binary file contents, and it tests understanding rather than auditing the code. The [evaluation results](eval/RESULTS.md) record question quality, grading errors, and costs on synthetic changes. They do not certify arbitrary repositories.
 
 ## Commands
 
@@ -166,10 +178,10 @@ Version 0.1 checks local commits and pushes only. It does not cover web merges, 
 | `init` | Create this repository's policy, ignore, and context files |
 | `doctor` | Check hook and integration coverage |
 | `status` | Show this repository's policy, pending checks, and recent skips |
-| `check` | Start or resume a check in the terminal (`--staged` for commits) |
+| `check` | Start or resume a check (`--pull-request` for the open pull request, `--staged` for commits, `--browser` / `--terminal` to choose where) |
 | `pending` | List unfinished checks |
 | `yolo` | Toggle skipping checks |
-| `config` | Change reviewer models and limits |
+| `config` | Change reviewer models, limits, the interface, and the default mode |
 | `auth` | Save your OpenRouter key or an OpenAI-compatible endpoint |
 | `prepare` | Schedule background preparation (`--retry` after a failure) |
 | `activate` | Open configured coding agents without reinstalling |
@@ -179,6 +191,7 @@ Each command explains itself with `sphinx <command> --help`. `--json` gives mach
 
 ## Reference
 
+- [What this fork changes](docs/fork.md): on-demand mode, pull request checks, and the other differences from upstream, with how to install, set up, and stay compatible.
 - [Configuration and cost](docs/configuration.md): reviewer models, OpenRouter, pricing, routing, limits, `.sphinxconfig`, `.sphinxignore`, project context, and background preparation.
 - [Integrations and troubleshooting](docs/integrations.md): Codex, Claude Code, Pi, Cursor, OpenCode, fallback forms, SSH, existing hooks, the JSON protocol, and uninstalling.
 - [Architecture](docs/architecture.md): the checkpoint sequence, the reviewer and its evidence, compaction, and state.
@@ -287,6 +300,7 @@ These live in `config.json`, and most can be set with `sphinx config`:
 | --- | --- | --- |
 | `models` | `--preset`, `--small`, `--medium`, `--large` | The reviewer for each change size |
 | `models.context` | `--context-model` | The model that keeps the working context, the short brief updated after each commit. Follows the small route unless set; `--context-model small` clears it |
+| `mode` | `--mode` | Your default for repositories whose `.sphinxconfig` doesn't set one: `block` (default) or `on-demand`. See [on-demand checks](docs/configuration.md#on-demand-checks) |
 | `interface` | `--interface` | Where questions appear, for a push and for `sphinx check`. `auto` (default): the browser on a local Mac, otherwise the terminal you pushed from. Or `browser` / `terminal` |
 | `maxModelCalls` | `--max-model-calls` | Optional cap on model requests per check (1–100, or `unlimited`, the default) |
 | `maxOutputTokens` | `--max-output-tokens` | Output allowance per request, including reasoning (default 4096) |
