@@ -7,6 +7,7 @@ import { listPresentations, claimPresentation } from './presentations.js';
 import { launchCheckpointTerminal, waitForCheckpointTerminal } from './terminal-launch.js';
 import { createBrowserInterview } from './browser-interview.js';
 import { setupNudge } from './repo-setup.js';
+import { stableNode } from './node-runtime.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -93,7 +94,7 @@ export async function prepareCursorIntegration(paths, { env = process.env, previ
   // Through the stable sphinx launcher when available, so package upgrades keep working.
   const command = launcher
     ? `SPHINX_HOME=${quote(paths.home)} ${launcher.env}${launcher.command} hook cursor`
-    : `SPHINX_HOME=${quote(paths.home)} ${quote(process.execPath)} ${quote(fileURLToPath(new URL('./cursor-hook.js', import.meta.url)))}`;
+    : `SPHINX_HOME=${quote(paths.home)} ${quote(stableNode(env))} ${quote(fileURLToPath(new URL('./cursor-hook.js', import.meta.url)))}`;
   const hooks = [
     { event: 'sessionStart', handler: { command, timeout: 10 } },
     { event: 'postToolUse', handler: { command, timeout: 1800, matcher: '^Shell$' } },
