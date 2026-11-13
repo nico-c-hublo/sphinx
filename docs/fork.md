@@ -64,7 +64,7 @@ For repositories where agents push branches and changes reach `main` through pul
    ```
 
    The questions appear where your `interface` setting says: the browser page on a local Mac, the terminal elsewhere. Use `--browser` or `--terminal` to choose for one run. Add `--comment` or `--no-comment` to decide whether the pass posts a summary comment on the pull request.
-5. Run `sphinx doctor` once. In on-demand repositories on GitHub, it checks that `gh` is installed and signed in. It also warns when a local `core.hooksPath` hides the global hooks, as husky does. Checks still work then, but nothing is prepared in the background until you run `sphinx install --repo`.
+5. Run `sphinx doctor` once. In on-demand repositories on GitHub, it checks that `gh` is installed and signed in. It also warns when a local `core.hooksPath` hides the global hooks, as husky does. Checks still work then, but nothing is prepared in the background until you run `sphinx install --repo`. hublo-tools spaces are the exception: their hooks run your global hooks after husky, so doctor reports them as covered once you have pushed (or committed, for a commit policy) from one.
 
 Coding agents can't switch a repository to on-demand mode (`sphinx init --apply` refuses it). Their guidance also tells them not to run `sphinx check` on your behalf.
 

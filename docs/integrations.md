@@ -120,7 +120,7 @@ These are for a person or a test harness. A coding agent must not answer on your
 | A native form was cancelled or never appeared | Run `sphinx check` in a terminal. In Codex, see the approval policy note above. |
 | The review failed before questions appeared | The page offers to continue from saved work. From a terminal: `sphinx check --id <id>`, or `--retry-review` for a failed, questionless review. See [limits](configuration.md#model-calls-tokens-and-limits). |
 | The check keeps coming back after you passed | If it asks only Continue or Stop, the earlier push or commit stopped before you chose Continue; choose Continue to let it through. If it asks questions again, something changed: code, destination base, policy, ignore rules, or context. Completion also expires after 24 hours. |
-| Hooks do not run in one repository | `sphinx doctor`, then `sphinx install --repo` if it reports a hooks override. |
+| Hooks do not run in one repository | `sphinx doctor`, then `sphinx install --repo` if it reports a hooks override. A tool whose own hooks run your global hooks at the end (hublo-tools does) needs no repository install: once Sphinx has seen a push or commit go through it, doctor reports the repository as covered. |
 | Missing remote history | `git fetch`, then push again. |
 
 Never start a second copy of a Git command that is still waiting.
