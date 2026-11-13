@@ -6,7 +6,9 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # The Hublo fork tests on Linux only: GitHub's hosted macOS runners often never pick its jobs
+        # up, which cancelled them and failed every run on main (see docs/fork.md). Upstream keeps macOS.
+        os: ${{ github.repository == 'nico-c-hublo/sphinx' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
