@@ -1,0 +1,49 @@
+name: Fork release
+# Tags each version of this fork once its tests pass on main, and opens a GitHub release for it.
+# The fork publishes nothing to npm (upstream's release job in test.yml runs only in parthh01/sphinx):
+# raising `version` in package.json is the release. This job only names that version in Git, as
+# an annotated v<version> tag on the first main commit that carries it and passes the Test workflow.
+#
+# A separate file, so merging upstream never conflicts with it. A version whose tag already exists
+# (a later commit with the same version, a re-run, or a tag set by hand) is left alone.
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tag:
+    # Only a push to main that passed, never a pull request's run, and never in a copy of this fork.
+    if: >-
+      github.repository == 'nico-c-hublo/sphinx' && (github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # the tag and the release, with this job's own token
+    concurrency:
+      group: fork-release
+      cancel-in-progress: false
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - name: Tag the version and open its release
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::notice::$tag already exists; nothing to release."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "Sphinx (Hublo fork) $version" "$SHA"
+          git push origin "refs/tags/$tag"
+          gh release create "$tag" --verify-tag --title "$tag" --generate-notes
