@@ -219,6 +219,22 @@ test('non-gated protocol hooks retain streaming stdin and stdout', { timeout: 50
   assert.equal(output, 'ack:one\ndone:two\n');
 });
 
+test('doctor warns when on-demand checks on a GitHub repository cannot use gh, and stays quiet otherwise', async t => {
+  const f = await fixture(t);
+  await install(f.options);
+  const ghCheck = async readiness => (await doctor({ ...f.options, ghReadiness: async () => readiness })).checks.find(c => c.name === 'GitHub CLI for on-demand checks');
+  f.git('remote', 'add', 'origin', 'git@github.com:acme/widgets.git');
+  assert.equal(await ghCheck('missing'), undefined, 'Block mode does not need gh');
+  await writeFile(path.join(f.repo, '.sphinxconfig'), JSON.stringify({ mode: 'on-demand' }));
+  const missing = await ghCheck('missing');
+  assert.equal(missing.ok, false); assert.match(missing.detail, /not installed.*gh auth login/);
+  const signedOut = await ghCheck('signed-out');
+  assert.equal(signedOut.ok, false); assert.match(signedOut.detail, /not signed in/);
+  assert.equal((await ghCheck('ok')).ok, true);
+  f.git('remote', 'set-url', 'origin', 'https://gitlab.com/acme/widgets.git');
+  assert.equal(await ghCheck('missing'), undefined, 'A repository with no GitHub remote never uses gh for its checks');
+});
+
 test('repository override is diagnosed and explicitly chained without replacing existing files', async t => {
   const f = await fixture(t);
   await executable(path.join(f.repo, 'custom-hooks/pre-push'), '#!/bin/sh\nexit 12\n');

@@ -86,7 +86,7 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
     title: 'Should Git wait for the check?', description: 'Either way, background review prepares questions after commits.', current: config.mode ?? 'block',
     choices: [
       { value: 'block', label: 'Yes, Git waits', description: 'The push or commit goes through only after you pass the understanding check.' },
-      { value: 'on-demand', label: 'No, only when I ask', description: 'Git is never blocked. Run sphinx check --pull-request (or sphinx check) when you want the check.' },
+      { value: 'on-demand', label: 'No, only when I ask', description: 'Git is never blocked. Run sphinx check --pull-request (or sphinx check) when you want the check. Needs the GitHub CLI (gh), signed in.' },
     ],
   });
   const branchScope = scope === 'global'

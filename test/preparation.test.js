@@ -561,11 +561,18 @@ test('after an on-demand push the worker only waits for a pull request that can 
   const noGh = await runPreparation({ ...f.options, store: f.store, curate: f.curate, wait,
     findPullRequest: async () => { lookups++; throw new Error('--pull-request needs the GitHub CLI (gh). Install it and sign in with gh auth login, then retry.'); } });
   assert.equal(noGh.status, 'ready'); assert.equal(lookups, 1); assert.equal(waits, 0);
+  // gh installed but signed out: no pull request can be found until the human signs in, so nothing waits.
+  await writeFile(path.join(f.cwd, 'feature.js'), 'export const feature = 5;\n'); f.git('commit', '-qam', 'signed out'); f.git('push', '-q', 'origin', 'feature');
+  await schedulePreparation({ ...f.options, afterPush: true });
+  const signedOut = await runPreparation({ ...f.options, store: f.store, curate: f.curate, wait,
+    findPullRequest: async () => { lookups++; throw new Error('--pull-request needs the GitHub CLI (gh) signed in. Run gh auth login, then retry.'); } });
+  assert.equal(signedOut.status, 'ready'); assert.equal(lookups, 2); assert.equal(waits, 0);
+  assert.match((await preparationStatus(f.options)).reason, /gh\) signed in/);
   // A repository with no GitHub remote never gets a pull request.
   f.git('remote', 'set-url', 'origin', f.remoteUrl);
   await writeFile(path.join(f.cwd, 'feature.js'), 'export const feature = 4;\n'); f.git('commit', '-qam', 'local');
   await schedulePreparation({ ...f.options, afterPush: true });
   const elsewhere = await runPreparation({ ...f.options, store: f.store, curate: f.curate, wait,
     findPullRequest: async () => { lookups++; throw new Error('No pull request found for the checked-out branch: none of the git remotes point to a known GitHub host'); } });
-  assert.equal(elsewhere.status, 'ready'); assert.equal(lookups, 2); assert.equal(waits, 0);
+  assert.equal(elsewhere.status, 'ready'); assert.equal(lookups, 3); assert.equal(waits, 0);
 });

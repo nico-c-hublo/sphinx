@@ -17,7 +17,7 @@ const evaluatorOptions = [
   modelCalls,
   ['--max-output-tokens <512-16384>', `Set the per-request output allowance, including hidden model reasoning. Default: ${DEFAULT_CONFIG.maxOutputTokens}. A larger ceiling can prevent truncated assessments and permits more billed output; it does not increase the call limit.`],
 ];
-const mode = ['--mode <block|on-demand>', 'block (default): Git waits until you pass the check. on-demand: Git is never blocked; run sphinx check --pull-request (or sphinx check) when you want it. Background preparation keeps running. A repository can set its own in .sphinxconfig.'];
+const mode = ['--mode <block|on-demand>', 'block (default): Git waits until you pass the check. on-demand: Git is never blocked; run sphinx check --pull-request (or sphinx check) when you want it. Background preparation keeps running. On-demand pull request checks need the GitHub CLI (gh), signed in. A repository can set its own in .sphinxconfig.'];
 const policy = [
   ['--branches <patterns>', 'Comma-separated branches. Pushes match destination names, e.g. main,release/*. Commits match the current local branch.'],
   ['--events <events>', 'pre-push, pre-commit, or both separated by a comma. Default: pre-push.'],

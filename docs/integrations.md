@@ -1,6 +1,6 @@
 # Integrations and troubleshooting
 
-The Git hook is the checkpoint. It works on its own, including for pushes from a terminal or GUI client. Coding-agent integrations add two things: guidance telling the agent to wait for a blocked Git command, and fallback forms for checks that could not open in the browser. For the first-run path, see the [README](../README.md).
+The Git hook is the checkpoint. It works on its own, including for pushes from a terminal or GUI client. That is block mode, the default; in [on-demand mode](configuration.md#on-demand-checks) the hook never blocks Git, only prepares questions in the background, and you run `sphinx check` yourself (finding the pull request needs a signed-in GitHub CLI, `gh`). Coding-agent integrations add two things: guidance telling the agent to wait for a blocked Git command, and fallback forms for checks that could not open in the browser. For the first-run path, see the [README](../README.md).
 
 - [Supported clients](#supported-clients)
 - [Choosing and opening clients](#choosing-and-opening-clients)

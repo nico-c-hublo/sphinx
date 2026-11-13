@@ -238,7 +238,7 @@ If a review is rate limited or a CLI fails mid-check, the questionnaire offers t
 | --- | --- |
 | `enabled` | `false` turns Sphinx off for this repository |
 | `events` | `pre-push` (default), `pre-commit`, or both |
-| `mode` | `block` (default): Git waits until you pass. `on-demand`: Git is never blocked; run `sphinx check --pull-request` when you want the check. See [on-demand checks](docs/configuration.md#on-demand-checks) |
+| `mode` | `block` (default): Git waits until you pass. `on-demand`: Git is never blocked; run `sphinx check --pull-request` when you want the check. Needs the GitHub CLI (`gh`), signed in. See [on-demand checks](docs/configuration.md#on-demand-checks) |
 | `branches` | Branches that trigger a check. Pushes match the destination, commits match the current branch. `["*"]` checks every branch, which is useful for pull requests |
 | `remotes` | Remote names that trigger push checks; `*` (default) means any |
 | `level` | How many questions: `relaxed`, `standard` (default), or `thorough` |

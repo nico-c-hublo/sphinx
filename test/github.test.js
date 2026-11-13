@@ -6,7 +6,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, saveCommentChoice, savedCommentChoice, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, ghReadiness, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, saveCommentChoice, savedCommentChoice, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -200,10 +200,23 @@ test('the pull request of the checked-out branch comes from gh pr view, with rea
   assert.equal(open.calls[0].options.cwd, '/repo');
 
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: false, missing: true }).gh }), /needs the GitHub CLI \(gh\)\. Install it and sign in with gh auth login/);
+  // A signed-out gh is not a missing pull request: nothing should wait for one to open.
+  for (const signedOut of [{ code: 4 }, { stderr: 'To get started with GitHub CLI, please run:  gh auth login\n' }]) {
+    await assert.rejects(pullRequestForBranch({ gh: reply({ ok: false, ...signedOut }).gh }), error => /needs the GitHub CLI \(gh\) signed in\. Run gh auth login/.test(error.message) && !/^No pull request found/.test(error.message));
+  }
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: false, stderr: 'no pull requests found for branch "feature"\n' }).gh }), /No pull request found for the checked-out branch: no pull requests found for branch "feature"/);
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'MERGED', baseRefName: 'main', headRefOid: head }) }).gh }), /Pull request #3 is merged; --pull-request checks open pull requests only\./);
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: JSON.stringify({ number: 3, url: 'https://github.com/acme/widgets/pull/3', state: 'OPEN', baseRefName: 'main' }) }).gh }), /without its number, base branch, or head commit/);
   await assert.rejects(pullRequestForBranch({ gh: reply({ ok: true, stdout: 'not json' }).gh }), /could not read/);
+});
+
+test('gh readiness tells setup and doctor whether on-demand checks can find pull requests', async () => {
+  const calls = [];
+  const gh = result => async (args, options) => { calls.push(args); return { stdout: '', stderr: '', missing: false, ...result }; };
+  assert.equal(await ghReadiness({ gh: gh({ ok: true }) }), 'ok');
+  assert.equal(await ghReadiness({ gh: gh({ ok: false, code: 1 }) }), 'signed-out');
+  assert.equal(await ghReadiness({ gh: gh({ ok: false, missing: true }) }), 'missing');
+  assert.deepEqual(calls[0], ['auth', 'status']);
 });
 
 test('a pull request check stamps the pull request it names, in its base repository, keeping one record set per pull request', async t => {

@@ -377,7 +377,9 @@ async function initCommand(initial) {
   for (const file of result.created) terminal.success(`Created ${path.basename(file)}`);
   for (const file of result.preserved) terminal.note(`Preserved ${path.basename(file)}`);
   if (info.exists && !info.legacy && Object.keys(overrides).length) terminal.warning('The existing .sphinxconfig was preserved; command-line overrides were not applied. Edit that file to change its policy.');
-  terminal.section('Effective repository policy'); printConfiguration(terminal, await loadConfig(repo.root), { routes: false });
+  const effective = await loadConfig(repo.root);
+  terminal.section('Effective repository policy'); printConfiguration(terminal, effective, { routes: false });
+  await warnGhForOnDemand(terminal, effective, repo.root);
   terminal.blank(); terminal.paragraph('Add project-specific sensitive or generated paths to .sphinxignore before an assessment.');
   terminal.paragraph('.sphinxcontext.md tells the reviewer what this project is and what you want to be asked about, for example "don\'t ask about styling". Your preferences for every repository go in ~/.config/sphinx/context.md.');
   if (result.contextExcluded) terminal.note('.sphinxcontext.md is kept out of Git on this machine. To share it with your team, run git add -f .sphinxcontext.md.');
@@ -554,6 +556,14 @@ function printPending(terminal, pending) {
   }
 }
 
+// On demand, the pull request check depends on gh; say so when it cannot work yet.
+async function warnGhForOnDemand(terminal, config, cwd) {
+  if (blocksGit(config)) return;
+  const { ghReadiness, GH_READINESS_TEXT } = await import('./github.js');
+  const state = await ghReadiness({ cwd });
+  if (state !== 'ok') { terminal.blank(); terminal.warning(GH_READINESS_TEXT[state]); }
+}
+
 // On demand, the hooks only prepare questions in the background; a check runs without them.
 const integrationText = (active, config) => blocksGit(config)
   ? (active ? 'Active · Sphinx dispatchers are configured' : 'Not active or needs repair · run sphinx doctor')
@@ -576,7 +586,7 @@ async function statusCommand(command, values) {
   terminal.rows([['Repository', repo.root], ['Current local branch', branch], ['Git integration', integrationText(active, config)], ['Repository policy', info.exists ? `${info.path}${info.legacy ? ' (legacy)' : ''}` : 'Global defaults; use sphinx init to create .sphinxconfig']]);
   if (info.shadowed) terminal.warning(`${info.shadowed} is ignored because .sphinxconfig takes precedence.`);
   terminal.section('Configured checkpoints'); printConfiguration(terminal, config, { routes: false });
-  if (preparation) terminal.rows([['Background review', preparation.status], ...(preparation.error ? [['Details', preparation.error]] : [])]);
+  if (preparation) terminal.rows([['Background review', preparation.status], ...(preparation.error ? [['Details', preparation.error]] : preparation.reason ? [['Details', preparation.reason]] : [])]);
   if (!active && !blocksGit(config)) { terminal.blank(); terminal.note('Checks still run when you ask. For questions prepared in the background, use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
   else if (!active) { terminal.blank(); terminal.warning('Policy alone does not install hooks. Use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
   const score = scoreSummary(await readStats(repo.root));
@@ -683,6 +693,7 @@ export async function main(argv) {
       if (values.json) { json(result); return 0; }
       const terminal = ui();
       if (values.mode !== undefined) terminal.success(blocksGit(config) ? 'Machine-wide default: Git waits for the understanding check.' : 'Machine-wide default: Git is never blocked; run sphinx check --pull-request when you want the check.');
+      if (values.mode !== undefined) await warnGhForOnDemand(terminal, config, process.cwd());
       if (values.interface !== undefined) terminal.success(`Questions appear ${config.interface === 'terminal' ? 'in the terminal (the browser is the fallback)' : config.interface === 'browser' ? 'in the browser' : 'in the browser on a local Mac, otherwise in the terminal'}.`);
       if (values['max-model-calls'] !== undefined) terminal.success(`Saved machine-wide limit: ${modelLimitText(maxModelCalls)} (previously ${modelLimitText(previousMaxModelCalls)}).`);
       if (values['max-output-tokens'] !== undefined) terminal.success(`Saved output allowance: ${config.maxOutputTokens} tokens per request, including model reasoning. Model calls: ${modelLimitText(maxModelCalls)}.`);

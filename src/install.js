@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { constants as osConstants } from 'node:os';
-import { getPaths } from './config.js';
+import { blocksGit, getPaths, loadConfig } from './config.js';
 import { nativeHookSpecs, installedHookSpecs, hasHook, addHook, removeHook, prepareMcp, commitMcp, rollbackMcp, removeMcp, inspectMcp } from './agent-settings.js';
 import { lifecycleHome, prepareCursorIntegration, prepareOpenCodeIntegration, removeLifecycleIntegration, lifecycleIntegrationStatus } from './lifecycle-integrations.js';
 import { preparePiIntegration, removePiIntegration, piIntegrationStatus, piIntegrationHome } from './pi-integration.js';
@@ -514,7 +514,18 @@ export async function dispatchHook({ event, args = [], input = '', cwd = process
   return gate({ event, args, input, cwd });
 }
 
-export async function doctor({ env = process.env, cwd = process.cwd() } = {}) {
+// On demand, the pull request check finds its pull request with gh. Only asked for a repository on GitHub.
+async function onDemandGhCheck(cwd, env, readiness) {
+  const root = await git(['rev-parse', '--show-toplevel'], cwd, env);
+  if (blocksGit(await loadConfig(root, env))) return null;
+  const { githubRepository, ghReadiness, GH_READINESS_TEXT } = await import('./github.js');
+  const urls = (await git(['config', '--get-regexp', '^remote\\..*\\.url$'], cwd, env, [0, 1])).split('\n').map(line => line.slice(line.indexOf(' ') + 1)).filter(Boolean);
+  if (!urls.some(url => githubRepository(url))) return null;
+  const state = await (readiness ?? ghReadiness)({ cwd, env });
+  return { name: 'GitHub CLI for on-demand checks', ok: state === 'ok', detail: state === 'ok' ? 'gh is signed in; sphinx check --pull-request and background preparation can find this branch\'s pull request.' : GH_READINESS_TEXT[state] };
+}
+
+export async function doctor({ env = process.env, cwd = process.cwd(), ghReadiness } = {}) {
   const { paths, manifest } = await manifestFor(env);
   const checks = [];
   const global = manifest.installs.global;
@@ -531,6 +542,8 @@ export async function doctor({ env = process.env, cwd = process.cwd() } = {}) {
       ? `Not covered: this repository's ${override.scope.slice(2)} core.hooksPath (${override.value}) replaces the global Sphinx hooks, often set by tools such as husky. Run sphinx install --repo here to chain that hook setup.`
       : 'Not covered. A local, worktree, or conditional override may require sphinx install --repo.';
     checks.push({ name: 'Current repository', ok: !!entry, detail: entry ? `Sphinx active: ${effective}` : uncovered });
+    const gh = await onDemandGhCheck(cwd, env, ghReadiness).catch(() => null);
+    if (gh) checks.push(gh);
     if (entry) {
       for (const name of [...GATED, ...PREPARED]) {
         const file = path.join(entry.hookDir, name);
