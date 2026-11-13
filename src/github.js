@@ -14,6 +14,9 @@ export const COMMENT_MARKER = '<!-- sphinx-understanding -->';
 // The repository's Sphinx Action reads this from the PR comment to create its check run.
 export const STAMP_MARKER = 'sphinx-stamp:v1';
 export const ACTION_REF = 'parthh01/sphinx/action';
+// The Action is upstream's, so it is pinned to an upstream release tag, not to this
+// fork's version: the fork's versions have no tag in parthh01/sphinx.
+export const ACTION_VERSION = '0.1.24';
 const RECORDS_KEPT = 20;
 const WORKER = fileURLToPath(new URL('./github-worker.js', import.meta.url));
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -215,8 +218,8 @@ export async function pullRequestPush(snapshot) {
   return fallback ? branch !== fallback : !['main', 'master'].includes(branch);
 }
 
-/** The workflow that runs the Sphinx Action, pinned to this release's tag. */
-export function workflowTemplate(version) {
+/** The workflow that runs the Sphinx Action, pinned to an upstream release tag. */
+export function workflowTemplate(version = ACTION_VERSION) {
   return `# Shows a "Sphinx" check on pull requests, from the stamp a contributor's Sphinx
 # posts after they pass its understanding check. https://github.com/parthh01/sphinx
 # It reads PR comments only and never checks out or runs pull request code, so it

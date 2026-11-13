@@ -6,7 +6,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, ghReadiness, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, saveCommentChoice, savedCommentChoice, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
+import { ACTION_VERSION, COMMENT_MARKER, STATUS_CONTEXT, checkRecord, commentBody, ghReadiness, githubRepository, pullRequestCheck, pullRequestForBranch, pullRequestPush, runStampJob, saveCommentChoice, savedCommentChoice, scheduleStamp, statusFor, workflowTemplate } from '../src/github.js';
 import { DEFAULT_CONFIG, policyHash, validateConfig, validateRepositoryConfig } from '../src/config.js';
 
 const snapshot = { event: 'pre-push', repoRoot: '/repo', head: 'b'.repeat(40), base: 'a'.repeat(40), stats: { files: 2, additions: 10, deletions: 1 }, target: { remote: 'origin', url: 'git@github.com:acme/widgets.git', ref: 'refs/heads/feature' } };
@@ -182,6 +182,11 @@ test('the workflow template pins the Action to the release tag, never runs pull 
   assert.match(text, /\npermissions:\n {2}checks: write\n {2}pull-requests: read\n {2}issues: read\n(?! )/);
   assert.match(text, /\n {2}cancel-in-progress: false\n/, 'a comment must not cancel a run that has already started');
   assert.doesNotMatch(text, /checkout|\brun:/, 'it never checks out or runs pull request code');
+});
+
+test('the workflow template defaults to an upstream Action tag, not this fork\'s version', () => {
+  assert.match(ACTION_VERSION, /^\d+\.\d+\.\d+$/);
+  assert.ok(workflowTemplate().includes(`- uses: parthh01/sphinx/action@v${ACTION_VERSION}\n`));
 });
 
 test('the pull request of the checked-out branch comes from gh pr view, with reasons a person can act on', async () => {

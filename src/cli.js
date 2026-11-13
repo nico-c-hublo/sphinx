@@ -394,7 +394,7 @@ async function githubCheckCommand(values) {
   const file = path.join(repo.root, '.github', 'workflows', 'sphinx.yml');
   await mkdir(path.dirname(file), { recursive: true });
   let created = true;
-  try { await writeFile(file, workflowTemplate(VERSION), { flag: 'wx' }); } catch (error) { if (error.code !== 'EEXIST') throw error; created = false; }
+  try { await writeFile(file, workflowTemplate(), { flag: 'wx' }); } catch (error) { if (error.code !== 'EEXIST') throw error; created = false; }
   if (values.json) { json({ file, created }); return 0; }
   const terminal = ui();
   if (created) terminal.success(`Created ${path.relative(repo.root, file)}`); else terminal.note(`${path.relative(repo.root, file)} already exists and was kept.`);
