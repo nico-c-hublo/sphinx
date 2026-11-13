@@ -215,6 +215,7 @@ export function validateProposal(proposal, { env = process.env } = {}) {
     if (config && typeof config === 'object') {
       if (config.enabled === false) errors.push('config.enabled cannot be false here; turning Sphinx off is the user\'s decision (they can run sphinx init themselves)');
       for (const key of ['branches', 'events']) if (Array.isArray(config[key]) && !config[key].length) errors.push(`config.${key} cannot be empty here; that would check nothing`);
+      if (config.mode === 'on-demand') errors.push('config.mode cannot be on-demand here; whether Git waits for the check is the user\'s decision (they can run sphinx init themselves)');
     }
   }
   const ignore = proposal.ignore ?? [];

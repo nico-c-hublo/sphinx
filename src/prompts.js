@@ -82,6 +82,13 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
     });
     values.events = selected === current ? original : selected;
   }
+  if (values.mode === undefined && splitList(values.events).length) values.mode = await prompts.choose({
+    title: 'Should Git wait for the check?', description: 'Either way, background review prepares questions after commits.', current: config.mode ?? 'block',
+    choices: [
+      { value: 'block', label: 'Yes, Git waits', description: 'The push or commit goes through only after you pass the understanding check.' },
+      { value: 'on-demand', label: 'No, only when I ask', description: 'Git is never blocked. Run sphinx check --pull-request (or sphinx check) when you want the check.' },
+    ],
+  });
   const branchScope = scope === 'global'
     ? 'By default, Sphinx runs on pushes to the destination branch names below. Each repository can override these machine-wide defaults by setting branches in .sphinxconfig to its own production branch name.'
     : 'Choose the destination branches that should trigger push checks in this repository. These override your machine-wide defaults and are saved as branches in .sphinxconfig. Use this project\'s production branch name.';
@@ -182,5 +189,6 @@ export function policyText(config) {
   if (config.events.includes('pre-push')) parts.push(`before pushes to ${branches} on ${remotes}`);
   if (config.events.includes('pre-commit')) parts.push(`before commits on ${branches}`);
   const text = parts.join(' and ');
-  return `${text[0].toUpperCase()}${text.slice(1)}, at ${config.level} depth, ${DISTANCES[config.distance]?.label.toLowerCase() ?? 'mixed'} questions.`;
+  const when = config.mode === 'on-demand' ? `Only when you ask (changes ${text}), never blocking Git` : `${text[0].toUpperCase()}${text.slice(1)}`;
+  return `${when}, at ${config.level} depth, ${DISTANCES[config.distance]?.label.toLowerCase() ?? 'mixed'} questions.`;
 }

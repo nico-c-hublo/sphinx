@@ -293,6 +293,21 @@ test('CLI init creates canonical main-branch policy without reinstalling hooks o
   assert.deepEqual(await f.calls(), []);
 });
 
+test('on-demand mode is set per repository with init or as a machine-wide default with config, and status says Git is never blocked', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  f.cli('config', '--mode', 'on-demand');
+  assert.equal(JSON.parse(await readFile(path.join(f.env.SPHINX_HOME, 'config.json'), 'utf8')).mode, 'on-demand');
+  f.cli('init', '--yes', '--mode', 'block');
+  assert.equal(JSON.parse(await readFile(path.join(f.repo, '.sphinxconfig'), 'utf8')).mode, 'block', 'A repository can still require blocking checks');
+  await writeFile(path.join(f.repo, '.sphinxconfig'), JSON.stringify({ mode: 'on-demand' }));
+  const status = f.cli('status').replace(/\s+/g, ' ');
+  assert.match(status, /Git is never blocked/);
+  assert.match(status, /sphinx check --pull-request/);
+  assert.match(status, /Background preparation off here/, 'Without hooks only background preparation is missing; checks still run on demand');
+  assert.doesNotMatch(status, /needs repair/);
+  assert.deepEqual(await f.calls(), []);
+});
+
 test('CLI init defaults inherit configured destinations rather than the current feature branch', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   f.git('checkout', '-qb', 'feature/setup');

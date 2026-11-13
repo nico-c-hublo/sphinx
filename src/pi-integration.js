@@ -13,6 +13,7 @@ const ACTIONS = new Map([
 const checkpoint = async options => (await import('./native-check.js')).runNativeCheckpoint(options);
 export const PI_GUIDANCE = [
   'Sphinx Git hooks serve a local browser questionnaire for blocking checkpoints and keep the original Git operation waiting. That same operation continues after verified completion. Native Pi dialogs are fallback checks; they do not resume an exited process.',
+  'A repository whose policy sets mode "on-demand" never blocks Git: the human runs sphinx check --pull-request (or sphinx check) when they want the check. Do not run it for them.',
   'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
   'Never answer for the human, relay the questionnaire through chat, open or automate its local browser URL, read private Sphinx assessments or answer keys, or bypass Git hooks. After a fallback check passes, verify that the original Git operation exited with a Sphinx blocking failure before retrying. Never repeat successful operations.',
 ];

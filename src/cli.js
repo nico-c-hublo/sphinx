@@ -11,7 +11,7 @@ import { prefersTerminal } from './git-interview.js';
 import { createBrowserInterview, offLimits } from './browser-interview.js';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { DISTANCES, getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash, routeMigrationNotice, routeMigrationNoticeShown } from './config.js';
+import { blocksGit, DISTANCES, getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash, routeMigrationNotice, routeMigrationNoticeShown } from './config.js';
 import { initializeRepository } from './repo-config.js';
 import { applyRepositorySetup, suggestRepositorySetup } from './repo-setup.js';
 import * as git from './git.js';
@@ -32,7 +32,7 @@ import { toggleYolo, yoloStatus, recentOverrides, recordOverride } from './overr
 import { runTerminalCheck } from './terminal-check.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
-const POLICY_FLAGS = ['branches', 'events', 'level', 'distance', 'remotes'];
+const POLICY_FLAGS = ['branches', 'events', 'level', 'distance', 'remotes', 'mode'];
 const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'context-model', 'allow-paid', 'max-model-calls', 'max-output-tokens', 'cli-billing'];
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
@@ -40,7 +40,7 @@ const OPTIONS = {
   init: ['yes', 'json', 'context', 'suggest', 'apply', 'github-check', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'pull-request', 'retry-review', 'browser', 'terminal', 'comment', 'no-comment'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
-  status: ['json'], config: ['json', 'distance', 'interface', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
+  status: ['json'], config: ['json', 'distance', 'interface', 'mode', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
   mcp: [], yolo: ['json', 'reason'], usage: ['json'],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
@@ -175,12 +175,13 @@ const routeRows = config => [
 function policyRows(config) {
   const enabled = config.enabled;
   return [
-    ['Push checkpoints', enabled && config.events.includes('pre-push') ? `Destination branches: ${config.branches.join(', ') || 'none'}. Remotes: ${config.remotes.join(', ') || 'none'}.` : 'Off. Local pushes are not checked by this policy.'],
+    ['Push checkpoints', enabled && config.events.includes('pre-push') ? `${blocksGit(config) ? '' : 'Assessed on demand. '}Destination branches: ${config.branches.join(', ') || 'none'}. Remotes: ${config.remotes.join(', ') || 'none'}.` : 'Off. Local pushes are not checked by this policy.'],
     ['Commit checkpoints', enabled && config.events.includes('pre-commit') ? `Staged changes on local branches: ${config.branches.join(', ') || 'none'}.` : 'Off. Local commits are not checked by this policy.'],
     ['Depth', `${config.level} · question caps: ${questionCapsText(config.level)}`],
     ['Distance', `${config.distance} · ${(DISTANCES[config.distance] ?? DISTANCES.mixed).description}`],
     ['Preparation', config.backgroundPreparation ? 'Background review after commits and branch updates' : 'On demand when the understanding check starts'],
-    ['Behavior', !enabled ? 'Disabled for this repository' : 'The Git operation only goes through after you answer the understanding questions correctly'],
+    ['Behavior', !enabled ? 'Disabled for this repository' : blocksGit(config) ? 'The Git operation only goes through after you answer the understanding questions correctly'
+      : 'Git is never blocked. Run sphinx check --pull-request (or sphinx check) when you want the understanding check'],
   ];
 }
 
@@ -358,7 +359,7 @@ async function initCommand(initial) {
     }
   }
   const overrides = {};
-  for (const key of ['level', 'distance']) if (values[key] !== undefined) overrides[key] = values[key];
+  for (const key of ['level', 'distance', 'mode']) if (values[key] !== undefined) overrides[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) overrides[key] = splitList(values[key]);
   let context = values.context;
   if (context === undefined && !initial.yes && !initial.json && process.stdin.isTTY && !(await loadProjectContext(repo.root)).text) {
@@ -553,6 +554,11 @@ function printPending(terminal, pending) {
   }
 }
 
+// On demand, the hooks only prepare questions in the background; a check runs without them.
+const integrationText = (active, config) => blocksGit(config)
+  ? (active ? 'Active · Sphinx dispatchers are configured' : 'Not active or needs repair · run sphinx doctor')
+  : (active ? 'Active · background preparation hooks are configured; Git is never blocked' : 'Background preparation off here · checks still run on demand · run sphinx doctor');
+
 async function statusCommand(command, values) {
   const { repo, config } = await repoConfig(), pending = [];
   const { preparationStatus } = await import('./preparation.js');
@@ -567,11 +573,12 @@ async function statusCommand(command, values) {
   const active = coverage.length > 0 && coverage.every(check => check.ok);
   const branch = await promisify(execFile)('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: repo.root }).then(result => result.stdout.trim()).catch(() => 'detached HEAD');
   terminal.section('Repository status');
-  terminal.rows([['Repository', repo.root], ['Current local branch', branch], ['Git integration', active ? 'Active · Sphinx dispatchers are configured' : 'Not active or needs repair · run sphinx doctor'], ['Repository policy', info.exists ? `${info.path}${info.legacy ? ' (legacy)' : ''}` : 'Global defaults; use sphinx init to create .sphinxconfig']]);
+  terminal.rows([['Repository', repo.root], ['Current local branch', branch], ['Git integration', integrationText(active, config)], ['Repository policy', info.exists ? `${info.path}${info.legacy ? ' (legacy)' : ''}` : 'Global defaults; use sphinx init to create .sphinxconfig']]);
   if (info.shadowed) terminal.warning(`${info.shadowed} is ignored because .sphinxconfig takes precedence.`);
   terminal.section('Configured checkpoints'); printConfiguration(terminal, config, { routes: false });
   if (preparation) terminal.rows([['Background review', preparation.status], ...(preparation.error ? [['Details', preparation.error]] : [])]);
-  if (!active) { terminal.blank(); terminal.warning('Policy alone does not install hooks. Use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
+  if (!active && !blocksGit(config)) { terminal.blank(); terminal.note('Checks still run when you ask. For questions prepared in the background, use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
+  else if (!active) { terminal.blank(); terminal.warning('Policy alone does not install hooks. Use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
   const score = scoreSummary(await readStats(repo.root));
   terminal.rows([['Understanding', score.calibrating ? `Calibrating · ${score.answered} of ${score.answered + score.needed} answers` : `${score.accuracy}% first try · ${score.answered} questions${score.streak > 1 ? ` · ${score.streak} in a row` : ''}${score.skipRate !== null ? ` · skipped ${score.skipRate}% of checks` : ''}`]]);
   if (yolo) { terminal.blank(); terminal.warning(`Yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'} since ${yolo.since}: checks are skipped. Run sphinx yolo${yolo.scope === 'global' ? ' outside a repository' : ''} to turn it off.`); }
@@ -592,7 +599,7 @@ async function showRouteNotice() {
 export function parseCommandLine(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
-    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, 'context-model': { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, interface: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
+    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, 'context-model': { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, mode: { type: 'string' }, interface: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, 'github-check': { type: 'boolean' }, suggest: { type: 'boolean' }, apply: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, browser: { type: 'boolean' }, terminal: { type: 'boolean' }, 'pull-request': { type: 'boolean' }, comment: { type: 'boolean' }, 'no-comment': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
@@ -668,13 +675,14 @@ export async function main(argv) {
     return result.checks.every(check => check.ok) ? 0 : 1;
   }
   if (command === 'config') {
-    if ([...MODEL_FLAGS, 'distance', 'interface'].some(key => values[key] !== undefined)) {
+    if ([...MODEL_FLAGS, 'distance', 'interface', 'mode'].some(key => values[key] !== undefined)) {
       const current = await loadConfig(), previousMaxModelCalls = current.maxModelCalls;
       const config = applyInstallOptions(current, values), maxModelCalls = config.maxModelCalls;
       await saveConfig(config);
       const result = { scope: 'global', path: getPaths().config, previousMaxModelCalls, maxModelCalls, config };
       if (values.json) { json(result); return 0; }
       const terminal = ui();
+      if (values.mode !== undefined) terminal.success(blocksGit(config) ? 'Machine-wide default: Git waits for the understanding check.' : 'Machine-wide default: Git is never blocked; run sphinx check --pull-request when you want the check.');
       if (values.interface !== undefined) terminal.success(`Questions appear ${config.interface === 'terminal' ? 'in the terminal (the browser is the fallback)' : config.interface === 'browser' ? 'in the browser' : 'in the browser on a local Mac, otherwise in the terminal'}.`);
       if (values['max-model-calls'] !== undefined) terminal.success(`Saved machine-wide limit: ${modelLimitText(maxModelCalls)} (previously ${modelLimitText(previousMaxModelCalls)}).`);
       if (values['max-output-tokens'] !== undefined) terminal.success(`Saved output allowance: ${config.maxOutputTokens} tokens per request, including model reasoning. Model calls: ${modelLimitText(maxModelCalls)}.`);

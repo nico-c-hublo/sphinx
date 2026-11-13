@@ -225,7 +225,10 @@ test('repository override is diagnosed and explicitly chained without replacing 
   f.git('config', '--local', 'core.hooksPath', 'custom-hooks');
   const global = await install(f.options);
   assert.ok(global.warnings.some(w => w.includes('overrides')));
-  assert.equal((await doctor(f.options)).checks.find(c => c.name === 'Current repository').ok, false);
+  const uncovered = (await doctor(f.options)).checks.find(c => c.name === 'Current repository');
+  assert.equal(uncovered.ok, false);
+  // Tools such as husky set this repository's own core.hooksPath, which hides the global hooks.
+  assert.match(uncovered.detail, /local core\.hooksPath \(custom-hooks\) replaces the global Sphinx hooks.*sphinx install --repo/);
   await install({ ...f.options, repo: true });
   assert.equal((await doctor(f.options)).checks.find(c => c.name === 'Current repository').ok, true);
   const reinstalled = await install(f.options);

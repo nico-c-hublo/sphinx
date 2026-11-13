@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { loadConfig, policyHash } from './config.js';
+import { fileURLToPath } from 'node:url';
+import { blocksGit, loadConfig, policyHash } from './config.js';
 import { repository, pushSnapshots, commitSnapshot, revalidateSnapshot } from './git.js';
 import { createSessionStore } from './sessions.js';
 import { queuePresentation, claimPresentation, listPresentations } from './presentations.js';
@@ -25,6 +26,10 @@ export function interviewEnvironment(cwd, env) {
   return scoped;
 }
 
+const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
+// After an on-demand push, preparation waits for the pull request to open so its check starts ready.
+const schedulePushPreparation = async ({ cwd, env, afterPush }) => (await import('./preparation.js')).schedulePreparation({ cwd, env, cliPath: CLI_PATH, afterPush });
+
 // GitHub is an optional integration, loaded only when a pass or skip is stamped.
 const scheduleStamp = async options => (await import('./github.js')).scheduleStamp(options);
 
@@ -33,12 +38,21 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
   store: providedStore, readConfig = loadConfig, snapshotsFor: collectSnapshots = snapshotsFor,
   revalidate = revalidateSnapshot, present, readYolo = yoloStatus, logOverride = recordOverride,
   queue = queuePresentation, claim = claimPresentation, listRequests = listPresentations,
-  output = line => process.stderr.write(`${line}\n`), stamp = scheduleStamp, askInTerminal = runGitTerminalCheck, watchMs = 1000,
+  output = line => process.stderr.write(`${line}\n`), stamp = scheduleStamp, prepare = schedulePushPreparation, askInTerminal = runGitTerminalCheck, watchMs = 1000,
 } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return 0;
   signal?.throwIfAborted();
   const repo = await repository(cwd);
   const config = await readConfig(repo.root, env);
+  // On demand, Git never waits: the human asks for the check with sphinx check --pull-request.
+  // Snapshots are not even collected, so this costs no network call. The working context is
+  // kept, because the pull request check that follows still uses it.
+  if (!blocksGit(config)) {
+    if (event !== 'pre-push' || !config.enabled || !config.events.includes('pre-push')) return 0;
+    output('Sphinx: on-demand mode; this push is not checked. Run sphinx check --pull-request when you want the understanding check.');
+    await prepare({ cwd: repo.root, env, afterPush: true }).catch(() => {});
+    return 0;
+  }
   const snapshots = await collectSnapshots({ event, args, input, cwd, config, env });
   if (!snapshots.length) return 0;
   // Once Git continues, the branch's working context has served its purpose.

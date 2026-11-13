@@ -525,7 +525,12 @@ export async function doctor({ env = process.env, cwd = process.cwd() } = {}) {
     await git(['rev-parse', '--git-dir'], cwd, env);
     const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
     const entry = await installForFolder(await resolveHooksPath(effective), manifest);
-    checks.push({ name: 'Current repository', ok: !!entry, detail: entry ? `Sphinx active: ${effective}` : 'Not covered. A local, worktree, or conditional override may require sphinx install --repo.' });
+    // Name the setting that hides the global hooks: tools such as husky set a repository's own core.hooksPath.
+    const override = entry ? null : await hooksPathBeforeInstall(true, cwd, env);
+    const uncovered = override && override.scope !== '--global' && override.scope !== '--system'
+      ? `Not covered: this repository's ${override.scope.slice(2)} core.hooksPath (${override.value}) replaces the global Sphinx hooks, often set by tools such as husky. Run sphinx install --repo here to chain that hook setup.`
+      : 'Not covered. A local, worktree, or conditional override may require sphinx install --repo.';
+    checks.push({ name: 'Current repository', ok: !!entry, detail: entry ? `Sphinx active: ${effective}` : uncovered });
     if (entry) {
       for (const name of [...GATED, ...PREPARED]) {
         const file = path.join(entry.hookDir, name);

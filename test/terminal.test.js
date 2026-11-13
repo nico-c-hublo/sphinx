@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { colorEnabled, createTerminal, stripAnsi, wrapText, withProgress, formatError, SPHINX } from '../src/terminal.js';
 import { printHelp, HELP } from '../src/help.js';
-import { askInstall, askPolicy, createPrompts } from '../src/prompts.js';
+import { askInstall, askPolicy, createPrompts, policyText } from '../src/prompts.js';
 import { applyInstallOptions } from '../src/cli.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { presetOptions } from '../src/model-presets.js';
@@ -175,6 +175,17 @@ test('checkbox line fallback toggles any agents and all without accepting partia
   assert.deepEqual(await createPrompts({ ui: output.ui, ask: async () => none.shift() }).multiselect({ title: 'Agents', choices }), []);
 });
 
+test('policy setup asks whether Git waits, and on-demand keeps assessing pushes without blocking them', async () => {
+  const output = capture(), answers = ['', '2', '', '', '', ''];
+  const values = await askPolicy(DEFAULT_CONFIG, {}, createPrompts({ ui: output.ui, ask: async () => answers.shift() }));
+  assert.match(output.text(), /Should Git wait for the check\?/);
+  assert.equal(values.mode, 'on-demand');
+  const updated = applyInstallOptions(DEFAULT_CONFIG, values);
+  assert.deepEqual(updated.events, ['pre-push'], 'Pushes are still what gets assessed');
+  assert.match(policyText(updated), /only when you ask/i);
+  assert.equal((await askPolicy(DEFAULT_CONFIG, { mode: 'block' }, createPrompts({ ui: capture().ui, ask: async () => '' }))).mode, 'block');
+});
+
 test('onboarding keeps intentionally empty branches and remotes on Enter', async () => {
   const current = { ...structuredClone(DEFAULT_CONFIG), branches: [], remotes: [], events: [] };
   const output = capture();
@@ -196,7 +207,7 @@ test('explicit model flags alter only their requested routes and reject invalid 
 });
 
 test('guided setup defers branch, remote, and depth questions unless the human customizes', async () => {
-  const output = capture(), answers = ['2', '', 'release/*', 'origin', 'thorough', 'low'];
+  const output = capture(), answers = ['2', '', '', 'release/*', 'origin', 'thorough', 'low'];
   const values = await askInstall(DEFAULT_CONFIG, { agents: 'none', preset: 'claude-economy' }, createPrompts({ ui: output.ui, ask: async () => answers.shift() }), { hasExistingConfig: false });
   assert.match(output.text().replace(/\s+/g, ' '), /Before pushes to main, master on any remote, at standard depth, mixed questions\./);
   assert.match(output.text(), /When should Sphinx run\?/);

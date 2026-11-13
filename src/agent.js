@@ -2,6 +2,16 @@ import { constants } from 'node:fs';
 import { browserHandoff } from './lifecycle-integrations.js';
 import { open } from 'node:fs/promises';
 import { setupNudge } from './repo-setup.js';
+import { blocksGit, loadConfig } from './config.js';
+import { repository } from './git.js';
+
+export const ON_DEMAND_GUIDANCE = 'This repository checks on demand: Git never waits for a Sphinx checkpoint, so pushes and commits go straight through. The human runs sphinx check --pull-request (or sphinx check) in their own terminal when they want the check; do not run it for them.';
+
+// Never fails session start: an unreadable policy just leaves the general guidance.
+async function onDemandNote(cwd, env) {
+  if (typeof cwd !== 'string' || !cwd) return null;
+  try { return blocksGit(await loadConfig((await repository(cwd)).root, env)) ? null : ON_DEMAND_GUIDANCE; } catch { return null; }
+}
 
 /** Session setup only. Git and native lifecycle hooks control the actual checkpoint. */
 export async function agentHook({ agent, event, input = '', env = process.env }) {
@@ -31,7 +41,7 @@ export async function agentHook({ agent, event, input = '', env = process.env })
     try { await file.writeFile(`\nexport SPHINX_CLAUDE_SESSION='${payload.session_id}'\n`); }
     finally { await file.close(); }
   }
-  const nudge = await setupNudge(payload?.cwd);
+  const nudge = await setupNudge(payload?.cwd), onDemand = await onDemandNote(payload?.cwd, env);
   return {
     exitCode: 0,
     output: {
@@ -51,6 +61,7 @@ export async function agentHook({ agent, event, input = '', env = process.env })
           'If neither the local page nor native forms are available, report the integration issue and use sphinx doctor to diagnose it. The human can run sphinx check in their own terminal. Do not substitute a chat-based questionnaire or submit answers yourself.',
           'The assessment is open-book. Helping the human inspect code is encouraged. The coding agent must not grade the response itself.',
           ...(nudge ? [nudge] : []),
+          ...(onDemand ? [onDemand] : []),
         ].join('\n'),
       },
     },

@@ -265,12 +265,14 @@ async function pushSnapshot({ repo, remote, remoteUrl, localRef, head, ref, base
 // base branch's current tip would also count the commits that reached it since as
 // changes this branch undoes. The pull request is part of the target, so this
 // check never stands in for a push, which is assessed against its own range.
-async function pullRequestSnapshot({ repo, localRef, upstreamRemote, remote: chosen, pullRequest, config, env }) {
+// Background preparation runs after a commit, before it is pushed: allowUnpushedHead
+// builds the check the pull request will need once HEAD is pushed, with the same id.
+async function pullRequestSnapshot({ repo, localRef, upstreamRemote, remote: chosen, pullRequest, config, env, allowUnpushedHead = false }) {
   const root = repo.root, number = pullRequest.number;
   const ref = `refs/heads/${pullRequest.baseRefName}`;
   if (await git(root, ['check-ref-format', ref], { allowFailure: true }) === null) throw new Error(`Pull request #${number} has an invalid base branch: ${pullRequest.baseRefName}`);
   const head = (await git(root, ['rev-parse', '--verify', 'HEAD'])).trim();
-  if (head !== pullRequest.headRefOid) {
+  if (head !== pullRequest.headRefOid && !allowUnpushedHead) {
     throw new Error(`HEAD (${head.slice(0, 12)}) is not the head of pull request #${number} (${pullRequest.headRefOid.slice(0, 12)}). Pull or push so they match, then retry.`);
   }
   // The remote that holds the pull request's base repository: for a pull request
@@ -337,7 +339,7 @@ export async function manualSnapshot(options) {
     : [];
   if (pullRequest) {
     if (!config.enabled || !config.events.includes('pre-push')) return null;
-    return pullRequestSnapshot({ repo, localRef, upstreamRemote: upstream[0], remote: options.remote, pullRequest, config, env });
+    return pullRequestSnapshot({ repo, localRef, upstreamRemote: upstream[0], remote: options.remote, pullRequest, config, env, allowUnpushedHead: options.allowUnpushedHead });
   }
   const remote = options.remote || upstream[0] || 'origin';
   const destination = branch || (upstream[0] === remote && upstream[1]) || localRef;

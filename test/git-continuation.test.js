@@ -283,6 +283,49 @@ test('a push of HEAD drops the working context of the branch it names once Git c
   await assert.rejects(readFile(brief), { code: 'ENOENT' });
 });
 
+test('on-demand mode lets a push through at once, without a questionnaire, and keeps the working context', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  await saveConfig({ ...f.config, mode: 'on-demand' }, f.env);
+  const brief = contextFile(await realpath(f.repo), 'refs/heads/main', f.env);
+  await writeJson(brief, { version: 1, sourceRef: 'refs/heads/main', overview: 'Unpushed work on main.', items: [] });
+  const result = await f.start('push', 'origin', 'HEAD').finished;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(await f.bare('rev-parse', 'refs/heads/main'), f.baseHead);
+  assert.match(result.stderr, /on-demand mode.*sphinx check --pull-request/);
+  assert.equal(result.stderr.split('\n').filter(line => line.startsWith('Sphinx:')).length, 1, 'At most one line');
+  assert.deepEqual(await f.oldCalls(), ['pre-push'], 'Existing hooks still run first');
+  assert.equal(await readFile(path.join(f.state, 'ready-0.json')).catch(() => null), null);
+  assert.deepEqual(await f.pending(), []);
+  // A later sphinx check --pull-request still starts from the brief.
+  assert.equal((await json(brief)).overview, 'Unpushed work on main.');
+});
+
+test('on-demand mode lets a commit through silently', { timeout: 15000 }, async t => {
+  const f = await fixture(t, { events: ['pre-commit'] });
+  await saveConfig({ ...f.config, mode: 'on-demand' }, f.env);
+  await writeFile(path.join(f.repo, 'a.txt'), 'changed\n'); await f.setup('add', 'a.txt');
+  const result = await f.start('commit', '-qm', 'next').finished;
+  assert.equal(result.code, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /Sphinx/);
+  assert.notEqual(await f.git('rev-parse', 'HEAD'), f.baseHead);
+  assert.deepEqual(await f.pending(), []);
+});
+
+test('an on-demand push schedules background preparation, and a failure to schedule never stops it', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  await saveConfig({ ...f.config, mode: 'on-demand' }, f.env);
+  const { runGitGate } = await import('../src/git-gate.js');
+  const calls = [], lines = [];
+  const input = `refs/heads/main ${f.baseHead} refs/heads/main ${'0'.repeat(40)}\n`;
+  const options = { event: 'pre-push', args: ['origin', f.remote], input, cwd: f.repo, env: f.env, output: line => lines.push(line),
+    snapshotsFor: () => assert.fail('On-demand mode never collects push snapshots') };
+  assert.equal(await runGitGate({ ...options, prepare: async args => { calls.push(args); } }), 0);
+  assert.equal(calls.length, 1); assert.equal(calls[0].afterPush, true);
+  assert.equal(await runGitGate({ ...options, prepare: async () => { throw new Error('cannot launch'); } }), 0);
+  assert.equal(await runGitGate({ ...options, event: 'pre-commit', input: '', prepare: async args => { calls.push(args); } }), 0);
+  assert.equal(calls.length, 1, 'A commit already schedules preparation from post-commit');
+});
+
 test('one push waits for every protected destination before any ref is sent', { timeout: 15000 }, async t => {
   const f = await fixture(t); await f.setup('branch', 'master');
   const child = f.start('push', 'origin', 'main', 'master');

@@ -186,7 +186,8 @@ Call caps bound requests and byte limits bound evidence. Neither is a dollar or 
 | Key | Meaning |
 | --- | --- |
 | `enabled` | `false` disables Sphinx for this repository |
-| `events` | `pre-push`, `pre-commit`, or both |
+| `events` | `pre-push`, `pre-commit`, or both: the changes that are assessed |
+| `mode` | `block` (default): Git waits until you pass. `on-demand`: Git is never blocked; you run the check yourself. See [On-demand checks](#on-demand-checks) |
 | `branches` | Push policies match the **destination** branch; commit policies match the current local branch |
 | `remotes` | Remote name patterns for pushes; default `*` |
 | `level` | `relaxed`, `standard`, or `thorough` |
@@ -208,6 +209,14 @@ If both `.sphinxconfig` and legacy `.sphinx.json` exist, `.sphinxconfig` wins an
 **Manual push checks.** `sphinx check --remote origin --branch main` selects the destination; otherwise Sphinx uses the upstream. Multiple destination refs are assessed separately. Tag-only pushes and deletions do not trigger checks in v0.1.
 
 **Pull request checks.** `sphinx check --pull-request` checks the open pull request of the checked-out branch, as GitHub shows it. The GitHub CLI (`gh`) finds the pull request; its base branch is the destination, and the change runs from where the branch left that base (their merge base). A manual push check instead compares with the destination's current tip, which is what a push sends, so on a branch that has fallen behind it would also count the commits merged since as changes the branch undoes. `HEAD` must be the pull request's head commit, the remote is the one that holds the base repository (`--remote` chooses among several), and the base branch must match the `branches` policy. The check names the pull request, so it never stands in for a push: pushing the same commits is assessed against its own range.
+
+### On-demand checks
+
+With `"mode": "on-demand"`, Git never waits for Sphinx: pushes and commits go straight through, and a push prints one line saying it was not checked. You run the check when you want it, usually `sphinx check --pull-request` once the pull request is open, or `sphinx check` for a push or `sphinx check --staged` for a commit. Keep `events` as it is: it still says which changes are assessed, so `events: []` would also turn off preparation and `sphinx check --pull-request`.
+
+Set it for one repository with `sphinx init --mode on-demand` (or in `.sphinxconfig`), or as your machine-wide default with `sphinx config --mode on-demand`. A repository's `.sphinxconfig` still wins over the machine-wide default, so a team can require blocking checks. Coding agents cannot propose on-demand mode in `sphinx init --apply`; that choice is yours. Switching modes discards prepared questions and passes, as any policy change does.
+
+Background preparation keeps running in on-demand mode and prepares the pull request check itself (see [Background preparation](#background-preparation)). If another tool sets this repository's own `core.hooksPath` (husky does), the global hooks stop running here; checks still work on demand, but nothing is prepared in the background until you run `sphinx install --repo`. `sphinx doctor` names the setting that hides them.
 
 **Pull request branches.** Set `"branches": ["*"]` to check pushes to every branch. The first push of a new branch is checked from where it left the remote's default branch (the same range the pull request shows), using local remote-tracking refs; later pushes check only the new commits.
 
@@ -265,10 +274,11 @@ After commits, merges, rewrites, and checkouts, Sphinx schedules a detached revi
 - Picking another model for a check, in the questionnaire or at a terminal check's recovery prompt, stops a background review of that check within about a second. Unless that review had already written its questions, the check then reviews on the new model. Usage already spent stays counted, and `sphinx status` shows the job as stopped.
 - Preparation expects the push that `git push` makes, or that `git push -u <remote> HEAD` makes where `git push` needs a destination: the branch of the same name on the push remote, unless `remote.<name>.push` maps it elsewhere or `push.default` is `upstream`. A first push is prepared from where the branch left the remote, as the push check computes it.
 - A push to another destination, or to a remote that changed since your last fetch, needs a fresh review at push time. Pre-commit checks always review on demand. Run `git fetch` if remote history is missing.
+- **In on-demand mode** preparation targets the check `sphinx check --pull-request` will ask for, not a push. Scheduling stays offline; the detached worker asks the GitHub CLI (`gh`) for the branch's open pull request and prepares that check from your local commit, so it is ready once you push. Without a pull request, `gh`, or a network, it only updates the working context, and `sphinx status` says why. After a push, the worker waits up to about five minutes for the pull request to be opened.
 
 ### Working context
 
-Before each background review, one short call updates the branch's working context: an overview and a few notes on where the unpushed work lives and what to check. The push-time reviewer starts from it instead of exploring the repository, verifies it against the code, and never cites it as evidence. Only the diff the curator has not seen yet is sent, and ignored files are never read. The context is removed once the push goes through.
+Before each background review, one short call updates the branch's working context: an overview and a few notes on where the unpushed work lives and what to check. The push-time reviewer starts from it instead of exploring the repository, verifies it against the code, and never cites it as evidence. Only the diff the curator has not seen yet is sent, and ignored files are never read. The context is removed once the push goes through. In on-demand mode it is kept after a push, so the pull request check you run later still starts from it; contexts unused for 14 days are cleaned up.
 
 The call runs on the small route by default. To give it a cheaper model without changing how small changes are checked, set a dedicated route; `small` returns to the default:
 

@@ -18,6 +18,7 @@ const HERE = fileURLToPath(import.meta.url);
 export const TERMINAL_GUIDANCE = [
   'Sphinx checks the human\'s understanding at Git checkpoints selected by .sphinxconfig.',
   'Git alone decides when a checkpoint is required. Do not alter policy or bypass its hooks.',
+  'A repository whose policy sets mode "on-demand" never blocks Git: the human runs sphinx check --pull-request (or sphinx check) when they want the check. Do not run it for them.',
   'For a blocking checkpoint, the Git hook serves a local Sphinx browser questionnaire and keeps the original Git operation waiting. On macOS the page opens in the background without activating or minimizing your coding window. Other environments print the local URL. After the human passes, they confirm whether that same operation should continue. Git then verifies the exact change and policy before going through. Never start a duplicate Git operation while it waits.',
   'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
   'After shell execution, this integration handles fallback requests only. It presents a local browser questionnaire for the exact queued checkpoint and waits for the human\'s result. A fallback interview cannot resume an exited Git process. Do not open another interview or poll for answers.',

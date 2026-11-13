@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { applyRepositorySetup, CONTEXT_TODO, SETUP_NUDGE, suggestRepositorySetup } from '../src/repo-setup.js';
 import { PROJECT_CONTEXT_TEMPLATE } from '../src/repo-context.js';
-import { agentHook } from '../src/agent.js';
+import { agentHook, ON_DEMAND_GUIDANCE } from '../src/agent.js';
 import { cursorAgentHook, TERMINAL_GUIDANCE } from '../src/lifecycle-integrations.js';
 
 const CLI = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
@@ -207,9 +207,23 @@ test('SessionStart nudges agents toward setup only when the repository has no .s
   assert.equal((await cursorAgentHook({ input: { hook_event_name: 'sessionStart', cwd: f.repo }, env: {} })).additional_context, TERMINAL_GUIDANCE);
 });
 
+test('SessionStart tells agents when a repository checks only on demand, so they never wait for or run the check', async t => {
+  const f = await fixture(t);
+  const context = async () => (await agentHook({ agent: 'claude', input: { hook_event_name: 'SessionStart', cwd: f.repo }, env: f.env })).output.hookSpecificOutput.additionalContext;
+  await f.write('.sphinxconfig', '{}\n');
+  assert.equal((await context()).includes(ON_DEMAND_GUIDANCE), false);
+  await f.write('.sphinxconfig', '{ "mode": "on-demand" }\n');
+  assert.ok((await context()).endsWith(`\n${ON_DEMAND_GUIDANCE}`));
+  await f.write('.sphinxconfig', '{ "mode": "broken" }\n');
+  assert.equal((await context()).includes(ON_DEMAND_GUIDANCE), false, 'An unreadable policy never breaks session start');
+});
+
 test('an agent proposal cannot switch checks off', async () => {
   const { validateProposal } = await import('../src/repo-setup.js');
   for (const config of [{ version: 1, enabled: false }, { version: 1, branches: [] }, { version: 1, events: [] }]) {
     assert.throws(() => validateProposal({ version: 1, config, ignore: [], context: null }), /cannot be false|cannot be empty/);
   }
+  // Whether Git waits for the check is the human's call too.
+  assert.throws(() => validateProposal({ version: 1, config: { version: 1, mode: 'on-demand' }, ignore: [], context: null }), /config\.mode cannot be on-demand here/);
+  assert.equal(validateProposal({ version: 1, config: { version: 1, mode: 'block' }, ignore: [], context: null }).config.mode, 'block');
 });
