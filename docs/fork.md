@@ -44,6 +44,15 @@ The questionnaire's update button follows the fork too. It compares your version
 
 The fork publishes nothing to npm. The release job in `.github/workflows/test.yml` runs only in `parthh01/sphinx`. Merging into `main` doesn't trigger the update button. To offer the team an update, raise `version` in `package.json` (and `package-lock.json`) in the pull request.
 
+Each version is tagged `v<version>` with a [GitHub release](https://github.com/nico-c-hublo/sphinx/releases). `.github/workflows/fork-release.yml` creates both once the Test workflow passes on the first `main` commit that carries the new version; no tag needs setting by hand. The update button still reads `package.json`, not the tags. Use a tag to install a given version, or to go back to one:
+
+```sh
+npm install -g github:nico-c-hublo/sphinx#v0.2.1
+npm install -g "github:nico-c-hublo/sphinx#semver:^0.2"   # the highest 0.2.x tag
+```
+
+The fork also carries upstream's `v0.1.x` tags. Fork versions stay above upstream's (see [Keeping up with upstream](#keeping-up-with-upstream)), so the two should not name the same version. If upstream ever tags a version the fork already tagged, `git fetch upstream` refuses to overwrite that tag; keep the fork's.
+
 ## Recommended setup
 
 For repositories where agents push branches and changes reach `main` through pull requests:
