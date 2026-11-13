@@ -840,4 +840,10 @@ test('hooks call the package manager shim on PATH so upgrades keep working; a ch
   assert.equal(pnpm.command, q(path.join(pnpmBin, 'sphinx')));
   const checkout = await sphinxLauncher(cli, { PATH: other }, node);
   assert.deepEqual(checkout, { env: '', command: `${q(node)} ${q(cli)}` });
+  // A checkout or test launcher keeps its own CLI even with a global install's shim on PATH.
+  const local = path.join(f.base, 'checkout', 'bin', 'sphinx.js');
+  await executable(local, '#!/usr/bin/env node\n');
+  const linked = path.join(f.base, 'linked'); await mkdir(linked, { recursive: true }); await symlink(local, path.join(linked, 'sphinx'));
+  assert.deepEqual(await sphinxLauncher(local, { PATH: pnpmBin }, node), { env: '', command: `${q(node)} ${q(local)}` });
+  assert.equal((await sphinxLauncher(local, { PATH: [pnpmBin, linked].join(path.delimiter) }, node)).command, q(path.join(linked, 'sphinx')), 'npm link still points at the checkout');
 });
