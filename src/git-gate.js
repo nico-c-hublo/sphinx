@@ -49,7 +49,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
   // kept, because the pull request check that follows still uses it.
   if (!blocksGit(config)) {
     if (event !== 'pre-push' || !config.enabled || !config.events.includes('pre-push')) return 0;
-    output('Sphinx: on-demand mode; this push is not checked. Run sphinx check --pull-request when you want the understanding check.');
+    output('Sphinx: on-demand mode; this push is not checked. Run sphinx check --pull-request when you want the understanding check (add --browser from a shell with no terminal, such as a coding agent’s).');
     await prepare({ cwd: repo.root, env, afterPush: true }).catch(() => {});
     return 0;
   }
