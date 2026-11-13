@@ -220,7 +220,7 @@ Set it for one repository with `sphinx init --mode on-demand` (or in `.sphinxcon
 
 Background preparation keeps running in on-demand mode and prepares the pull request check itself (see [Background preparation](#background-preparation)). If another tool sets this repository's own `core.hooksPath` (husky does), the global hooks stop running here; checks still work on demand, but nothing is prepared in the background until you run `sphinx install --repo`. `sphinx doctor` names the setting that hides them. A tool whose own hooks then run your global hooks (hublo-tools does) keeps everything working without it, and `sphinx doctor` reports the repository as covered once a push or commit has gone through.
 
-**Pull request branches.** Set `"branches": ["*"]` to check pushes to every branch. The first push of a new branch is checked from where it left the remote's default branch (the same range the pull request shows), using local remote-tracking refs; later pushes check only the new commits.
+**Pull request branches.** Set `"branches": ["*"]` to check pushes to every branch. The first push of a new branch is checked from where it left the remote's default branch (the same range the pull request shows), using local remote-tracking refs; later pushes check only the new commits. A force push after rebasing the branch onto work already on the remote (`git pull --rebase`, `git rebase origin/main`) is checked the same way as a first push, from where the branch now leaves the remote's checked branches, so the commits the rebase brought in don't count as the branch's change. Other rewrites are checked against the tip they overwrite: an amend, a rewind, or a push that replaces another branch (`feature:main`).
 
 ## Project context
 
