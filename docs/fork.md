@@ -89,7 +89,7 @@ On-demand mode and `models.context` are unknown to upstream, and upstream reject
 - A `.sphinxconfig` with `"mode": "on-demand"` fails validation for anyone running upstream Sphinx (`mode must be block`). If a repository commits that setting, everyone who works in it needs the fork.
 - A `models.context` route in `~/.config/sphinx/config.json` makes upstream reject the whole file. Before switching a machine back to upstream, run `sphinx config --context-model small`.
 
-Everything else is compatible. Block-mode repositories behave the same under either version. Commit statuses and comments use the same format. The workflow that `sphinx init --github-check` writes uses upstream's Action (`parthh01/sphinx/action`), which reads stamps from either version.
+Everything else is compatible. Block-mode repositories behave the same under either version. Commit statuses and comments use the same format. The workflow that `sphinx init --github-check` writes uses upstream's Action (`parthh01/sphinx/action`), which reads stamps from either version. It pins the Action to an upstream release tag (`ACTION_VERSION` in `src/github.js`), not to the fork's version, because upstream has no tags for the fork's versions.
 
 ## Keeping up with upstream
 
@@ -101,4 +101,4 @@ git log --oneline main..upstream/main   # upstream changes not merged yet
 git log --oneline upstream/main..main   # this fork's changes
 ```
 
-Merge upstream into a branch, run `npm test`, and open a pull request against this fork's `main`. The changes listed above are the parts of the code most likely to conflict. Keep `src/update.js` pointing at this fork. Upstream's version bumps come along with the merge, so check that the fork's `version` ends up higher than the one the team has installed.
+Merge upstream into a branch, run `npm test`, and open a pull request against this fork's `main`. The changes listed above are the parts of the code most likely to conflict. Keep `src/update.js` pointing at this fork. Upstream's version bumps come along with the merge, so check that the fork's `version` ends up higher than the one the team has installed. Keep the fork's `version` when `package.json` conflicts. To use a newer upstream Action, raise `ACTION_VERSION` to one of upstream's `v*` tags.
