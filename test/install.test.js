@@ -257,6 +257,49 @@ test('repository override is diagnosed and explicitly chained without replacing 
   assert.match(await readFile(path.join(f.repo, 'custom-hooks/pre-push'), 'utf8'), /exit 12/);
 });
 
+test('a repository hooks folder that runs the global hooks itself counts as covered once Sphinx sees each checked event go through it', { timeout: 20000 }, async t => {
+  const f = await fixture(t);
+  const remote = path.join(f.base, 'remote.git');
+  execFileSync('git', ['init', '-q', '--bare', remote], { env: f.env });
+  f.git('remote', 'add', 'origin', remote);
+  const commit = message => f.git('-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', message);
+  await install(f.options);
+  commit('plain');
+  await assert.rejects(readFile(path.join(f.paths.home, 'chains.json')), { code: 'ENOENT' }, 'A repository that uses the Sphinx hooks directly records nothing');
+  // Like hublo-tools: its own hook first, then the global hook of the same name, with the same arguments and input.
+  const chaining = '#!/bin/sh\nglobal=$(git config --global --path --get core.hooksPath)\nexec "$global/$(basename "$0")" "$@"\n';
+  for (const name of ['pre-commit', 'pre-push']) await executable(path.join(f.repo, 'tool-hooks', name), chaining);
+  f.git('config', '--local', 'core.hooksPath', 'tool-hooks');
+  const current = async () => (await doctor(f.options)).checks.find(c => c.name === 'Current repository');
+
+  let check = await current();
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /local core\.hooksPath \(tool-hooks\) replaces the global Sphinx hooks.*sphinx install --repo.*commit or push once/);
+
+  commit('through the tool');
+  check = await current();
+  assert.equal(check.ok, false, 'The policy checks pushes, and no push has gone through the tool yet');
+  assert.match(check.detail, /Not confirmed: .*\(tool-hooks\) runs the Sphinx hooks.*its pre-push hook.*push once/);
+  assert.ok((await install(f.options)).warnings.some(w => w.includes('overrides')));
+
+  f.git('push', '-q', 'origin', 'HEAD:refs/heads/main');
+  const report = await doctor(f.options);
+  check = report.checks.find(c => c.name === 'Current repository');
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /^Covered through this repository's local core\.hooksPath \(tool-hooks\): .*pre-push last went through on \d{4}-\d{2}-\d{2}/);
+  assert.equal(report.checks.find(c => c.name === 'pre-push dispatcher')?.ok, true, 'The covering install still has its dispatchers checked');
+  assert.equal((await install(f.options)).warnings.some(w => w.includes('overrides')), false);
+
+  // A pre-commit policy needs a commit through the tool too, which already happened.
+  await writeFile(path.join(f.repo, '.sphinxconfig'), JSON.stringify({ events: ['pre-push', 'pre-commit'] }));
+  assert.equal((await current()).ok, true);
+  // The tool dropping its hook is not covered any more, whatever was seen before.
+  await rm(path.join(f.repo, 'tool-hooks', 'pre-commit'));
+  check = await current();
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /its pre-commit hook.*commit once/);
+});
+
 test('repository installation works with linked worktrees whether or not extensions.worktreeConfig is on (#35)', async t => {
   const f = await fixture(t);
   await executable(path.join(f.repo, 'custom-hooks/pre-push'), '#!/bin/sh\nexit 12\n');

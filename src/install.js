@@ -174,6 +174,49 @@ async function installForFolder(folder, manifest) {
   return null;
 }
 
+// A tool that sets a repository's own core.hooksPath can still run the Sphinx hooks: each of
+// its hooks ends by running the global hook of the same name (hublo-tools does this, after
+// husky). Nothing in that folder says so reliably, so a Sphinx hook that runs while the
+// repository's hooks setting names a folder no install records writes it down: that folder
+// demonstrably passes control on to this install. Doctor and install trust it from then on.
+const chainsFile = paths => path.join(paths.home, 'chains.json');
+const ACTION = { 'pre-push': 'push', 'pre-commit': 'commit' };
+
+async function recordChain({ event, entry, cwd, env, paths, manifest }) {
+  const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
+  const folder = await hooksPathResolver(cwd, env)(effective);
+  if (!folder || await installForFolder(folder, manifest)) return;
+  const stored = await readJson(chainsFile(paths), {});
+  const chains = stored.version === 1 && stored.folders && typeof stored.folders === 'object' ? stored : { version: 1, folders: {} };
+  const previous = chains.folders[folder];
+  const record = previous?.install === entry.id && previous.events ? previous : { install: entry.id, events: {} };
+  record.events[event] = new Date().toISOString();
+  chains.folders[folder] = record;
+  await writeJson(chainsFile(paths), chains);
+}
+
+// How a folder that hides the Sphinx hooks still reaches them: the install it was seen running,
+// the gated events this repository's policy checks that it has not run through it (or no longer
+// has a hook for), and the latest one it did run. Null when it was never seen running one.
+async function chainCoverage(folder, { cwd, env, paths, manifest }) {
+  if (!folder) return null;
+  const chains = await readJson(chainsFile(paths), null).catch(() => null);
+  const record = chains?.version === 1 ? chains.folders?.[folder] : null;
+  const entry = record?.events && manifest.installs[record.install];
+  if (!entry) return null;
+  const root = await git(['rev-parse', '--show-toplevel'], cwd, env).catch(() => null);
+  const config = root ? await loadConfig(root, env).catch(() => null) : null;
+  const required = (config?.events ?? [...GATED]).filter(event => GATED.has(event));
+  const missing = [];
+  for (const event of required) {
+    let runnable = false;
+    try { await access(path.join(folder, event), constants.X_OK); runnable = true; } catch {}
+    if (!runnable || !record.events[event]) missing.push(event);
+  }
+  const [last] = Object.entries(record.events).filter(([event]) => GATED.has(event)).sort(([, a], [, b]) => String(b).localeCompare(String(a)));
+  return { entry, missing, last };
+}
+
 // A folder under Sphinx's own hooks directory that no install records is an orphan,
 // left behind by a lost or reset manifest; chaining to it would make every
 // pass-through hook call itself.
@@ -399,7 +442,9 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
     try {
       await git(['rev-parse', '--git-dir'], cwd, env);
       const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-      if (!await installForFolder(await resolveHooksPath(effective), manifest)) warnings.push('This repository overrides core.hooksPath. Run sphinx install --repo here to chain that hook setup.');
+      const folder = await resolveHooksPath(effective);
+      const chained = await chainCoverage(folder, { cwd, env, paths, manifest });
+      if (!await installForFolder(folder, manifest) && !(chained && !chained.missing.length)) warnings.push('This repository overrides core.hooksPath. Run sphinx install --repo here to chain that hook setup.');
     } catch {}
   }
   return { messages, warnings, agents: agentPlans.map(plan => plan.name) };
@@ -485,14 +530,17 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
 
 export async function dispatchHook({ event, args = [], input = '', cwd = process.cwd(), env = process.env, gate }) {
   if (!/^[a-z][a-z0-9-]*$/.test(event)) throw new Error('Invalid Git hook event.');
-  const { manifest } = await manifestFor(env);
+  const { paths, manifest } = await manifestFor(env);
   let entry = manifest.installs[env.SPHINX_INSTALL_ID];
+  const named = !!entry;
   if (!entry) {
     const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
     entry = await installForFolder(await hooksPathResolver(cwd, env)(effective), manifest);
   }
   if (!entry) throw new Error('Sphinx hook installation is missing. Run sphinx install to repair it.');
   if (Number(env.SPHINX_HOOK_DEPTH || 0) > 0) throw new Error('Recursive Sphinx Git hook detected. Run sphinx doctor and repair the hook chain.');
+  // Only diagnostics depend on the record, so failing to write it never stops Git.
+  if (named && GATED.has(event) && env.SPHINX_EVALUATOR !== '1') await recordChain({ event, entry, cwd, env, paths, manifest }).catch(() => {});
   const directory = entry.source.kind === 'path' ? path.resolve(cwd, entry.source.value)
     : path.join(await git(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd, env), 'hooks');
   const original = path.join(directory, event);
@@ -535,23 +583,34 @@ export async function doctor({ env = process.env, cwd = process.cwd(), ghReadine
   try {
     await git(['rev-parse', '--git-dir'], cwd, env);
     const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-    const entry = await installForFolder(await resolveHooksPath(effective), manifest);
+    const folder = await resolveHooksPath(effective);
+    const entry = await installForFolder(folder, manifest);
     // Name the setting that hides the global hooks: tools such as husky set a repository's own core.hooksPath.
     const override = entry ? null : await hooksPathBeforeInstall(true, cwd, env);
-    const uncovered = override && override.scope !== '--global' && override.scope !== '--system'
-      ? `Not covered: this repository's ${override.scope.slice(2)} core.hooksPath (${override.value}) replaces the global Sphinx hooks, often set by tools such as husky. Run sphinx install --repo here to chain that hook setup.`
+    const own = override && override.scope !== '--global' && override.scope !== '--system';
+    const setting = own ? `this repository's ${override.scope.slice(2)} core.hooksPath (${override.value})` : `core.hooksPath (${effective})`;
+    const chain = entry ? null : await chainCoverage(folder, { cwd, env, paths, manifest });
+    const covering = entry ?? (chain && !chain.missing.length ? chain.entry : null);
+    let detail;
+    if (entry) detail = `Sphinx active: ${effective}`;
+    else if (covering) detail = `Covered through ${setting}: its hooks run the Sphinx hooks${chain.last ? ` (${chain.last[0]} last went through on ${String(chain.last[1]).slice(0, 10)})` : ''}.`;
+    else if (chain) {
+      const events = chain.missing.join(' and ');
+      detail = `Not confirmed: ${setting} runs the Sphinx hooks, but Sphinx has not seen its ${events} hook do so, and this repository's policy checks ${chain.missing.length > 1 ? 'those events' : 'that event'}. If that hook passes control on, ${chain.missing.map(event => ACTION[event]).join(' and ')} once and run sphinx doctor again; otherwise run sphinx install --repo here to chain it.`;
+    } else detail = own
+      ? `Not covered: ${setting} replaces the global Sphinx hooks, often set by tools such as husky. Run sphinx install --repo here to chain that hook setup. If that setup already runs your global hooks itself, commit or push once and run sphinx doctor again.`
       : 'Not covered. A local, worktree, or conditional override may require sphinx install --repo.';
-    checks.push({ name: 'Current repository', ok: !!entry, detail: entry ? `Sphinx active: ${effective}` : uncovered });
+    checks.push({ name: 'Current repository', ok: !!covering, detail });
     const gh = await onDemandGhCheck(cwd, env, ghReadiness).catch(() => null);
     if (gh) checks.push(gh);
-    if (entry) {
+    if (covering) {
       for (const name of [...GATED, ...PREPARED]) {
-        const file = path.join(entry.hookDir, name);
+        const file = path.join(covering.hookDir, name);
         const content = await readFile(file).catch(() => null);
         let runnable = false;
         try { await access(file, constants.X_OK); runnable = true; } catch {}
-        const preparationCurrent = !PREPARED.has(name) || entry.preparationVersion === 1;
-        checks.push({ name: `${name} dispatcher`, ok: preparationCurrent && runnable && content !== null && hash(content) === entry.files[name], detail: preparationCurrent ? file : 'Background preparation hooks need updating. Run sphinx install.' });
+        const preparationCurrent = !PREPARED.has(name) || covering.preparationVersion === 1;
+        checks.push({ name: `${name} dispatcher`, ok: preparationCurrent && runnable && content !== null && hash(content) === covering.files[name], detail: preparationCurrent ? file : 'Background preparation hooks need updating. Run sphinx install.' });
       }
     }
   } catch { checks.push({ name: 'Current repository', ok: true, detail: 'Not inside a Git repository; global installation still applies to other repositories.' }); }
