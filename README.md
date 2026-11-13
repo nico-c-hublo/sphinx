@@ -50,7 +50,7 @@ npm install -g github:nico-c-hublo/sphinx
 sphinx install
 ```
 
-The `sphinx-understand` package on npm is upstream's release, without this fork's changes. Install from GitHub as shown above, and run the same command to update. It also replaces an existing upstream install, and keeps your settings. Don't use the questionnaire's update button: it installs from npm and would bring back upstream. To hide the button, set `SPHINX_UPDATE_CHECK=0` (see [install the fork](docs/fork.md#install-the-fork)).
+The `sphinx-understand` package on npm is upstream's release, without this fork's changes. Install from GitHub as shown above. It also replaces an existing upstream install, and keeps your settings. To update, run the same command or use the questionnaire's update button, which installs from this fork as well (see [install the fork](docs/fork.md#install-the-fork)).
 
 Guided setup asks which coding agents you use and which reviewer to use. It suggests Sonnet through Claude Code or GPT-6 Luna through Codex. If you choose OpenRouter, it asks for an API key. It then offers the recommended checkpoints (pushes to `main` or `master` at standard depth) or **Customize** to pick events, branches, remotes, and depth. To install without prompts:
 

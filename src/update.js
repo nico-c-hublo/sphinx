@@ -5,10 +5,17 @@ import { fileURLToPath } from 'node:url';
 import { getPaths, readJson, writeJson } from './config.js';
 import { VERSION } from './version.js';
 
-// The questionnaire shows the installed version and, when npm has a newer one,
-// offers a one-click update. The update waits until this Sphinx process exits,
-// so a check in progress never runs on half-replaced files.
-export const PACKAGE = 'sphinx-understand';
+// The questionnaire shows the installed version and, when this fork's main
+// branch has a newer one, offers a one-click update. The update waits until
+// this Sphinx process exits, so a check in progress never runs on half-replaced
+// files.
+//
+// This fork is installed from GitHub, not npm: the npm package of the same name
+// is upstream's release, so checking or installing from npm would replace the
+// fork with upstream. Bumping version in package.json on main is what offers
+// the update.
+export const SOURCE = 'github:nico-c-hublo/sphinx';
+const LATEST_URL = 'https://raw.githubusercontent.com/nico-c-hublo/sphinx/main/package.json';
 const CACHE_MS = 12 * 3600 * 1000;
 const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const cacheFile = env => path.join(getPaths(env).home, 'version.json');
@@ -22,16 +29,17 @@ export function isNewer(latest, current) {
   return false;
 }
 
-/** The latest published version, cached for 12 hours. Never throws; null when unknown. */
+/** The version on this fork's main branch, cached for 12 hours. Never throws; null when unknown. */
 export async function latestVersion({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now() } = {}) {
   if (env.SPHINX_UPDATE_CHECK === '0') return null;
   const cached = await readJson(cacheFile(env), null).catch(() => null);
-  if (cached && now - Date.parse(cached.checkedAt) < CACHE_MS) return cached.latest ?? null;
+  // A cache without this source was written by a copy that checked npm, so its version is upstream's.
+  if (cached?.source === SOURCE && now - Date.parse(cached.checkedAt) < CACHE_MS) return cached.latest ?? null;
   try {
-    const response = await fetchImpl(`https://registry.npmjs.org/${PACKAGE}/latest`, { signal: AbortSignal.timeout(4000), headers: { accept: 'application/json' } });
+    const response = await fetchImpl(LATEST_URL, { signal: AbortSignal.timeout(4000), headers: { accept: 'application/json' } });
     const latest = response.ok ? (await response.json())?.version : null;
     if (typeof latest !== 'string') return null;
-    await writeJson(cacheFile(env), { latest, checkedAt: new Date(now).toISOString() }).catch(() => {});
+    await writeJson(cacheFile(env), { latest, source: SOURCE, checkedAt: new Date(now).toISOString() }).catch(() => {});
     return latest;
   } catch { return null; }
 }
@@ -40,9 +48,9 @@ export async function latestVersion({ env = process.env, fetchImpl = globalThis.
 export async function updatePlan({ root = PACKAGE_ROOT } = {}) {
   const real = await realpath(root).catch(() => root);
   if (!real.split(path.sep).includes('node_modules')) return { manager: null, note: 'This is a linked development copy. Update it with git pull.' };
-  if (/[\\/](?:\.pnpm|pnpm)[\\/]/.test(real)) return { manager: 'pnpm', command: ['pnpm', 'add', '-g', `${PACKAGE}@latest`] };
-  if (/[\\/]\.bun[\\/]/.test(real)) return { manager: 'bun', command: ['bun', 'add', '-g', `${PACKAGE}@latest`] };
-  return { manager: 'npm', command: ['npm', 'install', '-g', `${PACKAGE}@latest`] };
+  if (/[\\/](?:\.pnpm|pnpm)[\\/]/.test(real)) return { manager: 'pnpm', command: ['pnpm', 'add', '-g', SOURCE] };
+  if (/[\\/]\.bun[\\/]/.test(real)) return { manager: 'bun', command: ['bun', 'add', '-g', SOURCE] };
+  return { manager: 'npm', command: ['npm', 'install', '-g', SOURCE] };
 }
 
 /** What the questionnaire shows. Never throws. */

@@ -22,7 +22,7 @@ Before proposing a stronger model or additional model calls, measure whether the
 
 ## Releases
 
-> **In this fork** ([nico-c-hublo/sphinx](https://github.com/nico-c-hublo/sphinx)), nothing is released. The `release` job runs only in `parthh01/sphinx`, and the fork is installed from GitHub (see [What this fork changes](docs/fork.md#install-the-fork)). The rest of this section describes upstream.
+> **In this fork** ([nico-c-hublo/sphinx](https://github.com/nico-c-hublo/sphinx)), nothing is released. The `release` job runs only in `parthh01/sphinx`, and the fork is installed from GitHub (see [What this fork changes](docs/fork.md#install-the-fork)). To offer the team an update through the questionnaire's update button, raise `version` in `package.json` and `package-lock.json` in your pull request. The rest of this section describes upstream.
 
 Every push to `main` that passes the tests is released to npm by the `release` job in `.github/workflows/test.yml`.
 
