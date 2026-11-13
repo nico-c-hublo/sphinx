@@ -492,6 +492,18 @@ test('a pull request check covers the range the pull request shows, not the base
   assert.notEqual(manual.id, snapshot.id);
 });
 
+test('background preparation can build a pull request check before the commit is pushed, with the id the check computes after', async t => {
+  const f = await pullRequestFixture(t);
+  const next = await commit(f.cwd, { 'feature.txt': 'feature, revised\n' });
+  await assert.rejects(manualSnapshot({ cwd: f.cwd, config: defaults, pullRequest: f.pullRequest() }), /is not the head of pull request #7/);
+  const prepared = await manualSnapshot({ cwd: f.cwd, config: defaults, pullRequest: f.pullRequest(), allowUnpushedHead: true });
+  assert.equal(prepared.head, next);
+  assert.equal(prepared.base, f.forked);
+  await command(f.cwd, 'push', 'origin', 'feature');
+  const checked = await manualSnapshot({ cwd: f.cwd, config: defaults, pullRequest: f.pullRequest({ headRefOid: next }) });
+  assert.equal(checked.id, prepared.id);
+});
+
 test('a pull request check in a shallow clone fetches the history it needs to find where the branch left its base', async t => {
   const f = await pullRequestFixture(t);
   // CI-style clones: only the branch, or every branch, one commit deep. Neither reaches the fork point.

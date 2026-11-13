@@ -2,7 +2,8 @@
 
 Sphinx helps developers retain understanding of agent-assisted changes. Keep assessment policy provider-neutral. Use Node.js 22.19+ and the embedded Pi coding-agent SDK for the reviewer session, tool loop, and native compaction. Keep the Pi SDK and model transport dependencies pinned to the reviewed versions in package.json and package-lock.json.
 
-- Git decides when a checkpoint is required; an independent evaluator writes and grades questions.
+- Repository policy decides when a checkpoint is required, never the coding agent. In `block` mode (the default) Git enforces it; in `on-demand` mode Git is never blocked and the human runs `sphinx check`. An independent evaluator writes and grades questions either way.
+- Only on-demand mode depends on the GitHub CLI (`gh`), to find the pull request. Keep it optional: without it, Git and block mode must work unchanged, and on-demand paths must say that `gh` is missing or signed out rather than fail silently or wait for a pull request.
 - Never inherit the coding conversation into an assessment. Use committed/staged evidence and a fresh isolated reviewer session. Codex/Claude routes are isolated model transports underneath Pi, not persistent native reviewer sessions.
 - Keep Pi's discovered project resources and general-purpose tools disabled. Sphinx owns filtered immutable Git tools, exact evidence archives, project context, counted usage, and explicitly configured request caps; do not add a parallel custom agent loop or compactor.
 - Model-call caps are optional and default to null. Preserve explicit user limits; size-based planning targets must not become hidden request caps. Context, output, tool-page, and timeout limits remain enforced.

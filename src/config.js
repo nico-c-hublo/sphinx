@@ -85,7 +85,7 @@ export function validateConfig(config) {
   for (const key of Object.keys(config)) if (!allowed.has(key)) fail(`unknown setting ${key}`);
   if (config.version !== 1) fail('version must be 1');
   for (const key of ['enabled', 'allowPaid', 'backgroundPreparation', 'workingContext']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
-  for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], distance: ['high','mixed','low'], audit: ['large','all'], interface: ['auto','browser','terminal'], mode: ['block'], cliBilling: ['plan','api'] })) {
+  for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], distance: ['high','mixed','low'], audit: ['large','all'], interface: ['auto','browser','terminal'], mode: ['block','on-demand'], cliBilling: ['plan','api'] })) {
     if (key === 'mode' && config.mode === 'advisory') fail('mode "advisory" was removed. Remove mode from your configuration; use sphinx yolo to bypass checks when urgent');
     if (!values.includes(config[key])) fail(`${key} must be ${values.join(', ')}`);
   }
@@ -267,6 +267,9 @@ export function stableStringify(value) {
 // GitHub stamps) are left out, so changing them keeps prepared checks and passes.
 // Version the contract when assessment semantics change: older questions and
 // receipts must not stand in for an assessment under the new requirements.
+/** Whether Git waits at a checkpoint. In on-demand mode the human asks for checks with sphinx check. */
+export const blocksGit = config => config.mode !== 'on-demand';
+
 export function policyHash({ version, enabled, mode, events, branches, remotes, exclude, level, distance, routing }) {
   return createHash('sha256').update(stableStringify({ version, enabled, mode, events, branches, remotes, exclude, level, distance, routing, assessmentContract: 3 })).digest('hex');
 }

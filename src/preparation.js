@@ -4,8 +4,8 @@ import { mkdir, open, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { getPaths, loadConfig, policyHash, readJson, writeJson } from './config.js';
-import { matches, pushSnapshots, repository, revalidateSnapshot } from './git.js';
+import { blocksGit, getPaths, loadConfig, policyHash, readJson, writeJson } from './config.js';
+import { manualSnapshot, matches, pushSnapshots, repository, revalidateSnapshot } from './git.js';
 import { yoloStatus } from './overrides.js';
 import { createSessionStore } from './sessions.js';
 import { curateQuietly } from './working-context.js';
@@ -126,7 +126,27 @@ async function expectedSnapshots(root, sourceRef, head, config, env) {
   return snapshots;
 }
 
-async function planFor({ cwd, env, config }) {
+// Where the branch left the branch a pull request would target, read from local refs only:
+// the remote's default branch when Git knows it, else the first policy branch it tracks.
+// It only orients working-context curation; the pull request check finds its own base.
+async function guessedBase(root, sourceRef, head, config, env) {
+  const branch = sourceRef.slice('refs/heads/'.length);
+  const remote = await git(root, ['config', '--get', `branch.${branch}.remote`], env, true) || 'origin';
+  if (!/^[\w.-]+$/.test(remote)) return null;
+  const candidates = [await git(root, ['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`], env, true),
+    ...config.branches.filter(name => !/[*?[]/.test(name)).map(name => `refs/remotes/${remote}/${name}`)];
+  for (const ref of candidates.filter(Boolean)) {
+    const base = await git(root, ['merge-base', ref, head], env, true);
+    if (OID.test(base)) return base;
+  }
+  return null;
+}
+
+// On demand, Git never waits, so the check worth preparing is the one sphinx check
+// --pull-request will ask for. Planning stays offline (it runs inside Git hooks); the
+// worker asks GitHub for the pull request. afterPush marks the job a push starts, which
+// waits for the pull request to open.
+async function planFor({ cwd, env, config, afterPush = false }) {
   if (env.SPHINX_EVALUATOR === '1') return { reason: 'Evaluator subprocesses do not prepare assessments.' };
   const repo = await repository(cwd);
   config ??= await loadConfig(repo.root, env);
@@ -137,6 +157,10 @@ async function planFor({ cwd, env, config }) {
   const sourceRef = await git(repo.root, ['symbolic-ref', '--quiet', 'HEAD'], env, true);
   const head = await git(repo.root, ['rev-parse', '--verify', 'HEAD'], env, true);
   if (!sourceRef || !OID.test(head)) return { reason: 'No committed branch is checked out.', repo };
+  if (!blocksGit(config)) {
+    const id = digest(JSON.stringify({ version: 1, kind: 'pull-request', root: repo.root, sourceRef, head, policy: policyHash(config), afterPush: !!afterPush }));
+    return { id, kind: 'pull-request', afterPush: !!afterPush, config, repo, sourceRef, head, snapshots: [] };
+  }
   const snapshots = await expectedSnapshots(repo.root, sourceRef, head, config, env);
   if (!snapshots.length) return { reason: 'No changed protected destination is expected for this branch.', repo };
   const id = digest(JSON.stringify({ version: 1, root: repo.root, sourceRef, head, policy: policyHash(config), snapshots: snapshots.map(snapshot => snapshot.id).sort() }));
@@ -147,7 +171,7 @@ function summary(record) {
   if (!record) return null;
   return {
     jobId: record.id, status: record.status, prepared: record.prepared.length, total: record.total,
-    scheduledAt: record.scheduledAt, updatedAt: record.updatedAt,
+    scheduledAt: record.scheduledAt, updatedAt: record.updatedAt, ...(record.reason ? { reason: record.reason } : {}),
     ...(Object.hasOwn(errors, record.errorCode) ? { error: errors[record.errorCode] } : {}),
   };
 }
@@ -164,8 +188,8 @@ export async function preparationStatus({ cwd = process.cwd(), env = process.env
   return summary(record);
 }
 
-export async function schedulePreparation({ cwd = process.cwd(), env = process.env, cliPath, config, retry = false, spawnImpl = spawn } = {}) {
-  const plan = await planFor({ cwd, env, config });
+export async function schedulePreparation({ cwd = process.cwd(), env = process.env, cliPath, config, retry = false, afterPush = false, spawnImpl = spawn } = {}) {
+  const plan = await planFor({ cwd, env, config, afterPush });
   if (!plan.id) {
     if (plan.repo) {
       const oldFiles = filesFor(plan.repo.root, env);
@@ -184,7 +208,7 @@ export async function schedulePreparation({ cwd = process.cwd(), env = process.e
     await writeJson(files.latest, { id: plan.id });
     if (previous && previous.status !== 'stale' && !(retry && ['failed', 'stopped'].includes(previous.status))) return { status: 'existing', state: previous.status, jobId: plan.id };
     const now = new Date().toISOString();
-    const record = { version: 1, id: plan.id, status: 'scheduled', total: plan.snapshots.length, prepared: [], scheduledAt: now, updatedAt: now, pid: null };
+    const record = { version: 1, id: plan.id, status: 'scheduled', total: plan.snapshots.length, prepared: [], scheduledAt: now, updatedAt: now, pid: null, ...(plan.afterPush ? { afterPush: true } : {}) };
     await writeJson(files.job(plan.id), record);
     try {
       const child = spawnImpl(process.execPath, [cliPath, 'prepare', '--worker'], {
@@ -202,7 +226,11 @@ export async function schedulePreparation({ cwd = process.cwd(), env = process.e
   });
 }
 
-export async function runPreparation({ cwd = process.cwd(), env = process.env, config, store, generate, wait = delay, curate } = {}) {
+// GitHub is an optional integration, loaded only when on-demand preparation looks for the pull request.
+const openPullRequest = async options => (await import('./github.js')).pullRequestForBranch(options);
+
+export async function runPreparation({ cwd = process.cwd(), env = process.env, config, store, generate, wait = delay, curate,
+  findPullRequest = openPullRequest, pullRequestTries = 10, pullRequestEveryMs = 30000 } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return { status: 'skipped', prepared: [], reason: 'Evaluator subprocesses do not prepare assessments.' };
   const repo = await repository(cwd), files = filesFor(repo.root, env);
   const latest = await readJson(files.latest, null);
@@ -221,9 +249,10 @@ export async function runPreparation({ cwd = process.cwd(), env = process.env, c
     await writeJson(files.job(id), record); return record;
   });
   if (!claimed) return { status: 'skipped', prepared: [], reason: 'Preparation was superseded or already claimed.' };
-  const finish = async (status, errorCode) => {
+  const finish = async (status, errorCode, reason) => {
     claimed.status = status; claimed.updatedAt = new Date().toISOString();
     if (errorCode) claimed.errorCode = errorCode;
+    if (reason) claimed.reason = reason;
     await locked(files, () => writeJson(files.job(id), claimed));
     await collectGarbage({ env });
     return { status, prepared: claimed.prepared, ...(errorCode ? { error: errors[errorCode] } : {}) };
@@ -237,23 +266,61 @@ export async function runPreparation({ cwd = process.cwd(), env = process.env, c
     return finish('stale');
   };
   try {
-    const plan = await planFor({ cwd: repo.root, env, config });
+    const afterPush = !!initial.afterPush;
+    const plan = await planFor({ cwd: repo.root, env, config, afterPush });
     if (plan.id !== id) return finish('stale');
     store ??= createSessionStore({ env, generate, validate: async (snapshot, currentConfig) => {
       if (await yoloOn()) throw new Error('Yolo mode was turned on; background review is paused.');
       const effective = await loadConfig(snapshot.repoRoot, env);
       if (policyHash(effective) !== policyHash(currentConfig) || !await revalidateSnapshot(snapshot, effective, { env })) throw new Error('The snapshot or policy changed before preparation.');
     } });
-    // One cheap free-model call keeps the branch's working context current, so
-    // the review below and the one at push time start already oriented.
-    const lead = plan.snapshots[0];
-    await curateQuietly({ repoRoot: repo.root, sourceRef: lead.sourceRef, base: lead.base, head: lead.head, config: plan.config, env, wait, call: curate });
+    const superseded = async () => (await readJson(files.latest, null))?.id !== id;
+    let reason;
+    if (plan.kind === 'pull-request') {
+      // The check sphinx check --pull-request will ask for, built from local HEAD before it is pushed.
+      let missing = false;
+      const lookup = async () => {
+        try {
+          const pullRequest = await findPullRequest({ cwd: repo.root, env });
+          const snapshot = await manualSnapshot({ cwd: repo.root, env, config: plan.config, pullRequest, allowUnpushedHead: true });
+          if (!snapshot) reason = `Pull request #${pullRequest.number} targets ${pullRequest.baseRefName}, which this policy does not check.`;
+          return snapshot;
+        } catch (error) { reason = String(error?.message || error).split('\n')[0]; missing = /^No pull request found/.test(reason); return null; }
+      };
+      // Only a branch on GitHub, with gh working, can still get a pull request worth waiting for.
+      const opensLater = async () => {
+        if (!missing) return false;
+        const { githubRepository } = await import('./github.js');
+        // Raw remote URLs, as the check matches them (git remote -v would apply insteadOf rewrites).
+        const urls = (await git(repo.root, ['config', '--get-regexp', '^remote\\..*\\.url$'], env, true)).split('\n').map(line => line.slice(line.indexOf(' ') + 1)).filter(Boolean);
+        return urls.some(url => githubRepository(url));
+      };
+      let snapshot = await lookup();
+      await curateQuietly({ repoRoot: repo.root, sourceRef: plan.sourceRef, base: snapshot?.base ?? await guessedBase(repo.root, plan.sourceRef, plan.head, plan.config, env), head: plan.head, config: plan.config, env, wait, call: curate });
+      // A push usually comes just before its pull request is opened.
+      const waiting = afterPush && await opensLater();
+      for (let attempt = 1; !snapshot && waiting && missing && attempt < pullRequestTries; attempt++) {
+        if (await superseded()) return finish('stale');
+        await wait(pullRequestEveryMs);
+        if (await superseded()) return finish('stale');
+        if (await yoloOn()) return paused();
+        snapshot = await lookup();
+      }
+      if (!snapshot) return finish('ready', undefined, reason);
+      plan.snapshots = [snapshot];
+      claimed.total = 1;
+    } else {
+      // One cheap free-model call keeps the branch's working context current, so
+      // the review below and the one at push time start already oriented.
+      const lead = plan.snapshots[0];
+      await curateQuietly({ repoRoot: repo.root, sourceRef: lead.sourceRef, base: lead.base, head: lead.head, config: plan.config, env, wait, call: curate });
+    }
     for (const snapshot of plan.snapshots) {
       const current = await readJson(files.latest, null);
       if (current?.id !== id) return finish('stale');
       const session = await store.ensure(snapshot, plan.config);
       ensured.push(session.id);
-      const fresh = await planFor({ cwd: repo.root, env, config });
+      const fresh = await planFor({ cwd: repo.root, env, config, afterPush });
       if (await yoloOn()) return paused();
       if (fresh.id !== id || !await revalidateSnapshot(snapshot, plan.config, { env })) return finish('stale');
       // A model picked for this check stops this review (see switchRoute); the check then reviews on that model.

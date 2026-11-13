@@ -5,7 +5,7 @@ import fsPromises, { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, getPaths, loadConfig, openRouterKey, policyHash, repositoryConfigInfo, routeMigrationNotice, routeMigrationNoticeShown, saveConfig, saveOpenRouterKey, stableStringify, validateConfig, writeJson } from '../src/config.js';
+import { blocksGit, DEFAULT_CONFIG, getPaths, loadConfig, openRouterKey, policyHash, repositoryConfigInfo, routeMigrationNotice, routeMigrationNoticeShown, saveConfig, saveOpenRouterKey, stableStringify, validateConfig, writeJson } from '../src/config.js';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'sphinx-config-test-'));
@@ -361,6 +361,24 @@ test('malformed credential files never echo their content in errors', async t =>
 
 test('advisory mode was removed and fails with a pointer to yolo', () => {
   assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), mode: 'advisory' }), /advisory" was removed.*sphinx yolo/);
+});
+
+test('on-demand mode never blocks Git, can be a global default, and a repository can set it either way', async t => {
+  assert.equal(DEFAULT_CONFIG.mode, 'block');
+  assert.equal(blocksGit(DEFAULT_CONFIG), true);
+  const onDemand = validateConfig({ ...structuredClone(DEFAULT_CONFIG), mode: 'on-demand' });
+  assert.equal(blocksGit(onDemand), false);
+  assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), mode: 'manual' }), /mode must be block, on-demand/);
+  // Choosing whether Git waits is policy: a prepared check or pass never carries across modes.
+  assert.notEqual(policyHash(onDemand), policyHash(DEFAULT_CONFIG));
+  const { repo, env, paths } = await fixture(t);
+  await writeJson(paths.config, { mode: 'on-demand' });
+  assert.equal((await loadConfig(repo, env)).mode, 'on-demand');
+  await writeJson(join(repo, '.sphinxconfig'), { mode: 'block' });
+  assert.equal((await loadConfig(repo, env)).mode, 'block');
+  await writeJson(paths.config, {});
+  await writeJson(join(repo, '.sphinxconfig'), { mode: 'on-demand' });
+  assert.equal((await loadConfig(repo, env)).mode, 'on-demand');
 });
 
 test('understanding distance defaults to mixed, accepts high and low, and a repository can override it', async t => {

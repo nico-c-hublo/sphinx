@@ -261,7 +261,7 @@ export async function usesSphinxAction(repoRoot) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/** gh with an optional JSON body on stdin. Resolves { ok, stdout, stderr, missing }; never rejects. */
+/** gh with an optional JSON body on stdin. Resolves { ok, code, stdout, stderr, missing }; never rejects. */
 export function ghCli(args, { env = process.env, host, input, cwd, timeoutMs = 30000 } = {}) {
   return new Promise(resolve => {
     let child, stdout = '', stderr = '';
@@ -271,11 +271,28 @@ export function ghCli(args, { env = process.env, host, input, cwd, timeoutMs = 3
     child.stdout.on('data', chunk => { if (stdout.length < 4 * 1024 * 1024) stdout += chunk; });
     child.stderr.on('data', chunk => { if (stderr.length < 64 * 1024) stderr += chunk; });
     child.once('error', error => { clearTimeout(timer); resolve({ ok: false, stdout: '', stderr, missing: error.code === 'ENOENT' }); });
-    child.once('close', code => { clearTimeout(timer); resolve({ ok: code === 0, stdout, stderr, missing: false }); });
+    child.once('close', code => { clearTimeout(timer); resolve({ ok: code === 0, code, stdout, stderr, missing: false }); });
     child.stdin.on('error', () => {});
     child.stdin.end(input === undefined ? '' : JSON.stringify(input));
   });
 }
+
+const GH_MISSING = '--pull-request needs the GitHub CLI (gh). Install it and sign in with gh auth login, then retry.';
+const GH_SIGNED_OUT = '--pull-request needs the GitHub CLI (gh) signed in. Run gh auth login, then retry.';
+
+/**
+ * Whether gh can find pull requests here: 'ok', 'missing' (not installed), or 'signed-out'.
+ * For setup warnings and sphinx doctor only; gh auth status may contact GitHub.
+ */
+export async function ghReadiness({ cwd, env = process.env, gh = ghCli } = {}) {
+  const result = await gh(['auth', 'status'], { env, cwd, timeoutMs: 10000 });
+  return result.missing ? 'missing' : result.ok ? 'ok' : 'signed-out';
+}
+
+export const GH_READINESS_TEXT = {
+  missing: 'The GitHub CLI (gh) is not installed. On-demand mode uses it to find the pull request: without it, sphinx check --pull-request fails and background preparation cannot prepare the pull request check. Install gh and run gh auth login.',
+  'signed-out': 'The GitHub CLI (gh) is not signed in. On-demand mode uses it to find the pull request: until you run gh auth login, sphinx check --pull-request fails and background preparation cannot prepare the pull request check.',
+};
 
 /**
  * The open pull request for the checked-out branch, as gh resolves it: its number,
@@ -286,7 +303,9 @@ export function ghCli(args, { env = process.env, host, input, cwd, timeoutMs = 3
  */
 export async function pullRequestForBranch({ cwd, env = process.env, gh = ghCli } = {}) {
   const viewed = await gh(['pr', 'view', '--json', 'number,url,state,baseRefName,headRefOid'], { env, cwd });
-  if (viewed.missing) throw new Error('--pull-request needs the GitHub CLI (gh). Install it and sign in with gh auth login, then retry.');
+  if (viewed.missing) throw new Error(GH_MISSING);
+  // gh exits 4 when it needs authentication; that is not a missing pull request, so nothing waits for one.
+  if (!viewed.ok && (viewed.code === 4 || /gh auth login/.test(viewed.stderr || ''))) throw new Error(GH_SIGNED_OUT);
   if (!viewed.ok) {
     const reason = String(viewed.stderr || '').trim().split('\n').find(Boolean) || 'gh pr view failed';
     throw new Error(`No pull request found for the checked-out branch: ${reason}`);

@@ -469,3 +469,110 @@ setTimeout(() => {}, 60000);
   assert.deepEqual({ cli: await readFile(path.join(state, 'terminated'), 'utf8').catch(() => 'still running'), job: (await preparationStatus({ cwd: f.cwd, env })).status, route: after.route.provider, calls: after.calls, investigation: after.reviewerCheckpoint ?? null },
     { cli: 'yes', job: 'stopped', route: 'codex', calls: 1, investigation: null });
 });
+
+// On-demand mode: a clone whose origin is named by a GitHub URL, served from a local bare
+// repository, with a pushed feature branch, one more local commit, and gh stubbed.
+async function onDemandFixture(t) {
+  const f = await fixture(t);
+  const remote = await mkdtemp(path.join(tmpdir(), 'sphinx-preparation-remote-'));
+  t.after(() => rm(remote, { recursive: true, force: true }));
+  const url = 'https://github.com/acme/widgets.git';
+  execFileSync('git', ['init', '--bare', '-q', '-b', 'main', remote], { env: f.env });
+  f.git('config', `url.${remote}.insteadOf`, url);
+  f.git('remote', 'set-url', 'origin', url);
+  f.git('push', '-q', 'origin', 'main');
+  f.git('switch', '-qc', 'feature');
+  await writeFile(path.join(f.cwd, 'feature.js'), 'export const feature = 1;\n'); f.git('add', '.'); f.git('commit', '-qm', 'feature');
+  f.git('push', '-q', '--set-upstream', 'origin', 'feature');
+  const pushed = f.git('rev-parse', 'HEAD');
+  await writeFile(path.join(f.cwd, 'feature.js'), 'export const feature = 2;\n'); f.git('commit', '-qam', 'revise');
+  const config = { ...f.config, mode: 'on-demand' };
+  const pull = (changes = {}) => {
+    const value = { number: 7, url: 'https://github.com/acme/widgets/pull/7', baseRefName: 'main', headRefOid: pushed, repository: { host: 'github.com', owner: 'acme', repo: 'widgets' }, ...changes };
+    return { ...value, pointsAtBase: remoteUrl => remoteUrl === url };
+  };
+  const curated = [];
+  const curate = async args => { curated.push(args); return { overview: 'Feature work.', items: [] }; };
+  return { ...f, config, options: { ...f.options, config }, pushed, pull, curated, curate };
+}
+
+test('on demand, scheduling stays offline and the worker prepares the check sphinx check --pull-request looks up after the push', async t => {
+  const f = await onDemandFixture(t);
+  const lookups = [];
+  const findPullRequest = async options => { lookups.push(options); return f.pull(); };
+  const scheduled = await schedulePreparation(f.options);
+  assert.equal(scheduled.status, 'scheduled');
+  assert.equal(lookups.length, 0, 'Scheduling runs inside a Git hook and never asks GitHub');
+  const ready = await runPreparation({ ...f.options, store: f.store, findPullRequest, curate: f.curate });
+  assert.equal(ready.status, 'ready');
+  assert.equal(lookups.length, 1);
+  assert.equal(f.generated.length, 1);
+  assert.equal(f.ensured[0].target.pullRequest.number, 7);
+  assert.equal(f.curated.length, 1, 'The working context is curated too');
+  // The human pushes, then asks for the check: it finds the prepared questions.
+  const head = f.git('rev-parse', 'HEAD');
+  f.git('push', '-q', 'origin', 'feature');
+  const { manualSnapshot } = await import('../src/git.js');
+  const checked = await manualSnapshot({ cwd: f.cwd, env: f.env, config: f.config, pullRequest: f.pull({ headRefOid: head }) });
+  assert.deepEqual(ready.prepared, [checked.id]);
+});
+
+test('on demand without a pull request, the worker only curates the working context and is not a failure', async t => {
+  const f = await onDemandFixture(t);
+  await schedulePreparation(f.options);
+  const ready = await runPreparation({ ...f.options, store: f.store, curate: f.curate,
+    findPullRequest: async () => { throw new Error('No pull request found for the checked-out branch: no pull requests found'); } });
+  assert.equal(ready.status, 'ready');
+  assert.deepEqual(ready.prepared, []);
+  assert.equal(f.generated.length, 0);
+  assert.equal(f.curated.length, 1);
+  assert.match(f.curated[0].prompt, /feature\.js/, 'Curated from where the branch left main');
+  const status = await preparationStatus(f.options);
+  assert.equal(status.status, 'ready'); assert.match(status.reason, /No pull request/);
+});
+
+test('after an on-demand push the worker waits for the pull request to open, and stops waiting once newer work supersedes it', async t => {
+  const f = await onDemandFixture(t);
+  f.git('push', '-q', 'origin', 'feature');
+  const head = f.git('rev-parse', 'HEAD');
+  let lookups = 0;
+  const opensLater = async () => { if (++lookups < 3) throw new Error('No pull request found for the checked-out branch'); return f.pull({ headRefOid: head }); };
+  const pushJob = await schedulePreparation({ ...f.options, afterPush: true });
+  assert.equal(pushJob.status, 'scheduled', 'A push starts its own job even when the last commit was already prepared');
+  const ready = await runPreparation({ ...f.options, store: f.store, curate: f.curate, findPullRequest: opensLater, wait: async () => {} });
+  assert.equal(ready.status, 'ready'); assert.equal(lookups, 3); assert.equal(f.generated.length, 1);
+
+  await writeFile(path.join(f.cwd, 'feature.js'), 'export const feature = 3;\n'); f.git('commit', '-qam', 'again'); f.git('push', '-q', 'origin', 'feature');
+  await schedulePreparation({ ...f.options, afterPush: true });
+  let waits = 0;
+  const superseded = await runPreparation({ ...f.options, store: f.store, curate: f.curate,
+    findPullRequest: async () => { throw new Error('No pull request found'); },
+    wait: async () => { if (++waits === 2) await schedulePreparation(f.options); } });
+  assert.equal(superseded.status, 'stale');
+  assert.equal(waits, 2);
+});
+
+test('after an on-demand push the worker only waits for a pull request that can still be opened', async t => {
+  const f = await onDemandFixture(t);
+  f.git('push', '-q', 'origin', 'feature');
+  let lookups = 0, waits = 0;
+  const wait = async () => { waits++; };
+  await schedulePreparation({ ...f.options, afterPush: true });
+  const noGh = await runPreparation({ ...f.options, store: f.store, curate: f.curate, wait,
+    findPullRequest: async () => { lookups++; throw new Error('--pull-request needs the GitHub CLI (gh). Install it and sign in with gh auth login, then retry.'); } });
+  assert.equal(noGh.status, 'ready'); assert.equal(lookups, 1); assert.equal(waits, 0);
+  // gh installed but signed out: no pull request can be found until the human signs in, so nothing waits.
+  await writeFile(path.join(f.cwd, 'feature.js'), 'export const feature = 5;\n'); f.git('commit', '-qam', 'signed out'); f.git('push', '-q', 'origin', 'feature');
+  await schedulePreparation({ ...f.options, afterPush: true });
+  const signedOut = await runPreparation({ ...f.options, store: f.store, curate: f.curate, wait,
+    findPullRequest: async () => { lookups++; throw new Error('--pull-request needs the GitHub CLI (gh) signed in. Run gh auth login, then retry.'); } });
+  assert.equal(signedOut.status, 'ready'); assert.equal(lookups, 2); assert.equal(waits, 0);
+  assert.match((await preparationStatus(f.options)).reason, /gh\) signed in/);
+  // A repository with no GitHub remote never gets a pull request.
+  f.git('remote', 'set-url', 'origin', f.remoteUrl);
+  await writeFile(path.join(f.cwd, 'feature.js'), 'export const feature = 4;\n'); f.git('commit', '-qam', 'local');
+  await schedulePreparation({ ...f.options, afterPush: true });
+  const elsewhere = await runPreparation({ ...f.options, store: f.store, curate: f.curate, wait,
+    findPullRequest: async () => { lookups++; throw new Error('No pull request found for the checked-out branch: none of the git remotes point to a known GitHub host'); } });
+  assert.equal(elsewhere.status, 'ready'); assert.equal(lookups, 3); assert.equal(waits, 0);
+});

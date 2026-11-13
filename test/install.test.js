@@ -219,13 +219,32 @@ test('non-gated protocol hooks retain streaming stdin and stdout', { timeout: 50
   assert.equal(output, 'ack:one\ndone:two\n');
 });
 
+test('doctor warns when on-demand checks on a GitHub repository cannot use gh, and stays quiet otherwise', async t => {
+  const f = await fixture(t);
+  await install(f.options);
+  const ghCheck = async readiness => (await doctor({ ...f.options, ghReadiness: async () => readiness })).checks.find(c => c.name === 'GitHub CLI for on-demand checks');
+  f.git('remote', 'add', 'origin', 'git@github.com:acme/widgets.git');
+  assert.equal(await ghCheck('missing'), undefined, 'Block mode does not need gh');
+  await writeFile(path.join(f.repo, '.sphinxconfig'), JSON.stringify({ mode: 'on-demand' }));
+  const missing = await ghCheck('missing');
+  assert.equal(missing.ok, false); assert.match(missing.detail, /not installed.*gh auth login/);
+  const signedOut = await ghCheck('signed-out');
+  assert.equal(signedOut.ok, false); assert.match(signedOut.detail, /not signed in/);
+  assert.equal((await ghCheck('ok')).ok, true);
+  f.git('remote', 'set-url', 'origin', 'https://gitlab.com/acme/widgets.git');
+  assert.equal(await ghCheck('missing'), undefined, 'A repository with no GitHub remote never uses gh for its checks');
+});
+
 test('repository override is diagnosed and explicitly chained without replacing existing files', async t => {
   const f = await fixture(t);
   await executable(path.join(f.repo, 'custom-hooks/pre-push'), '#!/bin/sh\nexit 12\n');
   f.git('config', '--local', 'core.hooksPath', 'custom-hooks');
   const global = await install(f.options);
   assert.ok(global.warnings.some(w => w.includes('overrides')));
-  assert.equal((await doctor(f.options)).checks.find(c => c.name === 'Current repository').ok, false);
+  const uncovered = (await doctor(f.options)).checks.find(c => c.name === 'Current repository');
+  assert.equal(uncovered.ok, false);
+  // Tools such as husky set this repository's own core.hooksPath, which hides the global hooks.
+  assert.match(uncovered.detail, /local core\.hooksPath \(custom-hooks\) replaces the global Sphinx hooks.*sphinx install --repo/);
   await install({ ...f.options, repo: true });
   assert.equal((await doctor(f.options)).checks.find(c => c.name === 'Current repository').ok, true);
   const reinstalled = await install(f.options);
