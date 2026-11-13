@@ -454,7 +454,7 @@ async function checkCommand(values) {
     commentOffer = { ...commentOffer, post: !!values.comment };
   }
   if (!values.json && questionnaireInterface(values, config) === 'browser') return browserCheck(session, config, { retry: values['retry-review'] });
-  if (!values.json && !process.stdin.isTTY) throw new Error('Use sphinx check --json from a coding agent, or run in an interactive terminal.');
+  if (!values.json && !process.stdin.isTTY) throw new Error('No terminal here. Add --browser to answer on the local browser page, use --json from a coding agent, or run in an interactive terminal.');
   const start = signal => withProgress(session.questions.length ? 'Loading prepared questions' : `Reviewing the change with ${routeText(session.route)}`, () => store.start(session.id, config, { signal }), { enabled: !values.json });
   if (values.json) {
     if (values['retry-review']) await store.retryReview(session.id, config);
