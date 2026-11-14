@@ -8,6 +8,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { install, uninstall, doctor, dispatchHook, detectAgents } from '../src/install.js';
 import { getPaths } from '../src/config.js';
 import { lifecycleHome } from '../src/lifecycle-integrations.js';
+import { stableNode } from '../src/node-runtime.js';
 
 async function fixture(t) {
   const base = await mkdtemp(path.join(tmpdir(), "sphinx install ' "));
@@ -627,7 +628,7 @@ test('native questionnaire hooks register host MCP servers without changing unre
   assert.match(toml, /tool_timeout_sec = 1800/);
   const claude = await json(claudeFile);
   assert.deepEqual(claude.oauthAccount, beforeClaude.oauthAccount);
-  assert.deepEqual(claude.mcpServers.sphinx, { type: 'stdio', command: process.execPath, args: [f.cliPath, 'mcp'], env: { SPHINX_HOME: f.paths.home }, timeout: 1800000 });
+  assert.deepEqual(claude.mcpServers.sphinx, { type: 'stdio', command: stableNode(f.env), args: [f.cliPath, 'mcp'], env: { SPHINX_HOME: f.paths.home }, timeout: 1800000 });
   assert.equal((await doctor(f.options)).checks.every(check => check.ok), true);
   await install({ ...f.options, agents: 'codex,claude' });
   assert.equal((await readFile(tomlFile, 'utf8')).split('[mcp_servers.sphinx]').length, 2);
@@ -840,4 +841,17 @@ test('hooks call the package manager shim on PATH so upgrades keep working; a ch
   assert.equal(pnpm.command, q(path.join(pnpmBin, 'sphinx')));
   const checkout = await sphinxLauncher(cli, { PATH: other }, node);
   assert.deepEqual(checkout, { env: '', command: `${q(node)} ${q(cli)}` });
+  // A checkout or test launcher keeps its own CLI even with a global install's shim on PATH.
+  const local = path.join(f.base, 'checkout', 'bin', 'sphinx.js');
+  await executable(local, '#!/usr/bin/env node\n');
+  const linked = path.join(f.base, 'linked'); await mkdir(linked, { recursive: true }); await symlink(local, path.join(linked, 'sphinx'));
+  assert.deepEqual(await sphinxLauncher(local, { PATH: pnpmBin }, node), { env: '', command: `${q(node)} ${q(local)}` });
+  assert.equal((await sphinxLauncher(local, { PATH: [pnpmBin, linked].join(path.delimiter) }, node)).command, q(path.join(linked, 'sphinx')), 'npm link still points at the checkout');
+  // A version manager's alias on PATH (mise's installs/node/lts) is written, not the versioned folder it resolves to.
+  const alias = path.join(f.base, 'installs', 'node', 'lts', 'bin');
+  await mkdir(alias, { recursive: true }); await symlink(process.execPath, path.join(alias, 'node'));
+  assert.equal((await sphinxLauncher(cli, { PATH: [alias, pnpmBin].join(path.delimiter) })).env, `PATH=${q(alias)}:"$PATH" `);
+  assert.equal((await sphinxLauncher(cli, { PATH: [alias, other].join(path.delimiter) })).command, `${q(path.join(alias, 'node'))} ${q(cli)}`);
+  await install({ ...f.options, env: { ...f.env, PATH: [alias, f.env.PATH].join(path.delimiter) } });
+  assert.equal((await json(f.paths.install)).node, path.join(alias, 'node'), 'install records the Node a too-old one reruns with');
 });
