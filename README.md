@@ -67,7 +67,7 @@ You should see:
 
 Use `--preset codex-economy` for Codex, or `--agents none` if you don't use a coding agent. Other presets, OpenRouter, OpenAI-compatible endpoints, and custom routes are covered in [configuration](docs/configuration.md#reviewer-models).
 
-Settings files symlinked into a dotfiles repository (Stow, Dotbot, chezmoi, home-manager) are supported: Sphinx edits the link's target in place and keeps the link. Hooks call the `sphinx` command your package manager installed (npm, pnpm, yarn, or Bun), so upgrading the package keeps them working.
+Settings files symlinked into a dotfiles repository (Stow, Dotbot, chezmoi, home-manager) are supported: Sphinx edits the link's target in place and keeps the link. Hooks call the `sphinx` command your package manager installed (npm, pnpm, yarn, or Bun), so upgrading the package keeps them working. They run it with the Node that `sphinx install` ran on, spelled as `PATH` reaches it: with a version manager alias such as mise's `lts`, they follow that alias to each new version. Run `sphinx install` outside any project that pins an older Node. If you start `sphinx` with a Node older than 22.19, it reruns itself with that recorded Node, or says how to fix it.
 
 ### 2. Load Sphinx in your coding agent (required if you use one)
 

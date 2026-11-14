@@ -9,6 +9,7 @@ import { blocksGit, getPaths, loadConfig } from './config.js';
 import { nativeHookSpecs, installedHookSpecs, hasHook, addHook, removeHook, prepareMcp, commitMcp, rollbackMcp, removeMcp, inspectMcp } from './agent-settings.js';
 import { lifecycleHome, prepareCursorIntegration, prepareOpenCodeIntegration, removeLifecycleIntegration, lifecycleIntegrationStatus } from './lifecycle-integrations.js';
 import { preparePiIntegration, removePiIntegration, piIntegrationStatus, piIntegrationHome } from './pi-integration.js';
+import { stableNode } from './node-runtime.js';
 
 // All documented Git hook names, including server, mail, p4, and fsmonitor hooks.
 const HOOKS = [
@@ -28,11 +29,15 @@ const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
  * The shell command hooks use to run Sphinx. Prefer the package manager's own
  * `sphinx` on PATH (an npm/yarn symlink or a pnpm/bun shim): it survives
  * upgrades, unlike a versioned store path. Node's directory is put first on
- * PATH so GUI-launched agents without a login PATH still find node. A checkout
- * without such a shim falls back to absolute node and CLI paths.
+ * PATH so GUI-launched agents without a login PATH still find node, and so a
+ * project pinned to an older Node does not run Sphinx with it. That directory is
+ * the one PATH reaches this Node through (stableNode), so a version manager's
+ * alias such as mise's installs/node/lts keeps hooks working across upgrades.
+ * A checkout without such a shim falls back to absolute node and CLI paths.
  * Returns shell `env` assignments (placed before any exec) and the `command`.
  */
 export async function sphinxLauncher(cliPath, env = process.env, execPath = process.execPath) {
+  const node = stableNode(env, execPath);
   const real = await realpath(cliPath).catch(() => cliPath);
   for (const directory of String(env.PATH || '').split(path.delimiter).filter(dir => path.isAbsolute(dir))) {
     const candidate = path.join(directory, 'sphinx');
@@ -41,10 +46,10 @@ export async function sphinxLauncher(cliPath, env = process.env, execPath = proc
       if (!info.isFile() || !(info.mode & 0o111)) continue;
       const matches = await realpath(candidate) === real
         || (info.size < 64 * 1024 && (await readFile(candidate, 'utf8')).includes('sphinx-understand/bin/sphinx.js'));
-      if (matches) return { env: `PATH=${quote(path.dirname(execPath))}:"$PATH" `, command: quote(candidate) };
+      if (matches) return { env: `PATH=${quote(path.dirname(node))}:"$PATH" `, command: quote(candidate) };
     } catch { /* Not a usable shim. */ }
   }
-  return { env: '', command: `${quote(execPath)} ${quote(cliPath)}` };
+  return { env: '', command: `${quote(node)} ${quote(cliPath)}` };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const AGENTS = ['codex', 'claude', 'pi', 'cursor', 'opencode'];
@@ -412,6 +417,8 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
   }
   entry.preparationVersion = 1;
   manifest.installs[id] = entry;
+  // bin/sphinx.js reruns itself with this Node when a project's Node is too old (nodeGuard).
+  manifest.node = stableNode(env);
   await writeJson(paths.install, manifest);
   await git(['config', info.scope, '--replace-all', 'core.hooksPath', entry.hookDir], cwd, env);
   messages.push(`Git hooks installed ${repo ? `for ${info.root}` : 'for this user'}. Existing hooks are chained.`);

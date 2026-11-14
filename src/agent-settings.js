@@ -2,6 +2,7 @@ import path from 'node:path';
 import { settingsTarget } from './user-file.js';
 import { lstat, readFile, mkdir, writeFile, rename, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { stableNode } from './node-runtime.js';
 
 const START = '# >>> Sphinx managed MCP server';
 const END = '# <<< Sphinx managed MCP server';
@@ -154,7 +155,7 @@ export async function prepareMcp({ name, paths, env, cliPath, previous }) {
     if (document.mcpServers !== undefined && (!document.mcpServers || Array.isArray(document.mcpServers) || typeof document.mcpServers !== 'object')) throw new Error(`Invalid mcpServers object in ${file}`);
     const existing = document.mcpServers?.sphinx;
     if (Object.hasOwn(document.mcpServers || {}, 'sphinx') && (!previous || !same(existing, previous.entry))) throw new Error(`Refusing to replace an existing or edited sphinx MCP server in ${file}. Remove or rename that entry first.`);
-    const entry = { type: 'stdio', command: process.execPath, args: [cliPath, 'mcp'], env: { SPHINX_HOME: paths.home }, timeout: 1800000 };
+    const entry = { type: 'stdio', command: stableNode(env), args: [cliPath, 'mcp'], env: { SPHINX_HOME: paths.home }, timeout: 1800000 };
     document.mcpServers ??= {}; document.mcpServers.sphinx = entry;
     return { before, after: `${JSON.stringify(document, null, 2)}\n`, record: { kind: 'json', file, existed, entry } };
   }
@@ -166,7 +167,7 @@ export async function prepareMcp({ name, paths, env, cliPath, previous }) {
   if (base.includes(START) || base.includes(END)) throw new Error(`Untracked Sphinx MCP block in ${file}. Remove or rename it before installing.`);
   assertNoCodexConflict(base, file);
   const separator = base ? base.endsWith('\n') ? '\n' : '\n\n' : '';
-  const block = `${separator}${START}\n[mcp_servers.sphinx]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify([cliPath, 'mcp'])}\ntool_timeout_sec = 1800\nenv = { SPHINX_HOME = ${JSON.stringify(paths.home)} }\n${END}\n`;
+  const block = `${separator}${START}\n[mcp_servers.sphinx]\ncommand = ${JSON.stringify(stableNode(env))}\nargs = ${JSON.stringify([cliPath, 'mcp'])}\ntool_timeout_sec = 1800\nenv = { SPHINX_HOME = ${JSON.stringify(paths.home)} }\n${END}\n`;
   return { before, after: base + block, record: { kind: 'toml', file, existed, block } };
 }
 
