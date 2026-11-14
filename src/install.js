@@ -33,19 +33,23 @@ const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
  * project pinned to an older Node does not run Sphinx with it. That directory is
  * the one PATH reaches this Node through (stableNode), so a version manager's
  * alias such as mise's installs/node/lts keeps hooks working across upgrades.
- * A checkout without such a shim falls back to absolute node and CLI paths.
+ * A checkout without such a shim falls back to absolute node and CLI paths. A
+ * shim that only names the package (pnpm, bun) is trusted only when the CLI
+ * being installed is itself that package's copy: a checkout or test launcher
+ * must not hand its hooks to whatever Sphinx happens to be installed globally.
  * Returns shell `env` assignments (placed before any exec) and the `command`.
  */
 export async function sphinxLauncher(cliPath, env = process.env, execPath = process.execPath) {
   const node = stableNode(env, execPath);
   const real = await realpath(cliPath).catch(() => cliPath);
+  const packaged = real.endsWith(path.join(path.sep, 'sphinx-understand', 'bin', 'sphinx.js'));
   for (const directory of String(env.PATH || '').split(path.delimiter).filter(dir => path.isAbsolute(dir))) {
     const candidate = path.join(directory, 'sphinx');
     try {
       const info = await stat(candidate);
       if (!info.isFile() || !(info.mode & 0o111)) continue;
       const matches = await realpath(candidate) === real
-        || (info.size < 64 * 1024 && (await readFile(candidate, 'utf8')).includes('sphinx-understand/bin/sphinx.js'));
+        || (packaged && info.size < 64 * 1024 && (await readFile(candidate, 'utf8')).includes('sphinx-understand/bin/sphinx.js'));
       if (matches) return { env: `PATH=${quote(path.dirname(node))}:"$PATH" `, command: quote(candidate) };
     } catch { /* Not a usable shim. */ }
   }
