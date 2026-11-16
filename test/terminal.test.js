@@ -207,7 +207,7 @@ test('explicit model flags alter only their requested routes and reject invalid 
 });
 
 test('guided setup defers branch, remote, and depth questions unless the human customizes', async () => {
-  const output = capture(), answers = ['2', '', '', 'release/*', 'origin', 'thorough', 'low'];
+  const output = capture(), answers = ['3', '', '', 'release/*', 'origin', 'thorough', 'low'];
   const values = await askInstall(DEFAULT_CONFIG, { agents: 'none', preset: 'claude-economy' }, createPrompts({ ui: output.ui, ask: async () => answers.shift() }), { hasExistingConfig: false });
   assert.match(output.text().replace(/\s+/g, ' '), /Before pushes to main, master on any remote, at standard depth, mixed questions\./);
   assert.match(output.text(), /When should Sphinx run\?/);
@@ -312,7 +312,8 @@ test('custom selection asks only for missing tiers and includes explicit paid ti
     },
     text: async options => { asked.push(options.title); return 'claude:haiku'; },
   }, { hasExistingConfig: false });
-  assert.deepEqual(asked, ['Evaluator for medium changes', 'Evaluator for large changes']);
+  assert.deepEqual(asked, ['Evaluator for medium changes', 'Evaluator for large changes', 'Evaluator for the working context']);
+  assert.equal(values['context-model'], 'claude:haiku');
   assert.equal(values.small, 'openrouter:vendor/paid-model');
   assert.equal(values.medium, 'claude:haiku');
   assert.equal(values.large, 'claude:haiku');
@@ -374,4 +375,83 @@ test('--context-model sets or clears the working-context route without touching 
   assert.equal(Object.hasOwn(cleared.models, 'context'), false, 'small returns curation to the small route');
   assert.throws(() => applyInstallOptions(config, { 'context-model': 'openrouter:paid-model' }), /allow-paid/, 'Paid OpenRouter context routes need permission');
   assert.throws(() => applyInstallOptions(config, { 'context-model': 'nope' }), /provider:model/);
+});
+
+test('custom routes ask for the working-context route, keep it on Enter, and count a paid one in consent', async () => {
+  const kept = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents: 'none' }, createPrompts({ ui: capture().ui, ask: async () => '' }), { hasExistingConfig: true });
+  assert.equal(kept['context-model'], undefined, 'Enter on the default leaves curation on the small route');
+  const saved = { ...structuredClone(DEFAULT_CONFIG), models: { ...structuredClone(DEFAULT_CONFIG.models), context: { provider: 'claude', model: 'haiku' } } };
+  let seen;
+  const cleared = await askInstall(saved, { ...onboardingPolicy, agents: 'none' }, {
+    choose: async () => 'custom',
+    text: async options => { if (options.title !== 'Evaluator for the working context') return 'claude:sonnet'; seen = options; return 'small'; },
+  });
+  assert.equal(seen.title, 'Evaluator for the working context');
+  assert.equal(seen.current, 'claude:haiku');
+  assert.equal(applyInstallOptions(saved, cleared).models.context, undefined, 'small returns curation to the small route');
+  let permissions = 0;
+  const paid = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents: 'none' }, {
+    choose: async options => { if (options.title === 'Enable paid OpenRouter requests?') { permissions++; return 'allow'; } return 'custom'; },
+    text: async options => options.title === 'Evaluator for the working context' ? 'openrouter:vendor/paid-model' : 'claude:sonnet',
+  }, { hasExistingConfig: true });
+  assert.equal(permissions, 1);
+  assert.equal(paid['allow-paid'], true);
+  assert.deepEqual(applyInstallOptions(DEFAULT_CONFIG, paid).models.context, { provider: 'openrouter', model: 'vendor/paid-model' });
+});
+
+test('a preset asks whether to keep a dedicated working-context route, and Keep shows it', async () => {
+  const saved = { ...structuredClone(DEFAULT_CONFIG), models: { ...structuredClone(DEFAULT_CONFIG.models), context: { provider: 'claude', model: 'haiku' } } };
+  const titles = [];
+  const follow = await askInstall(saved, { ...onboardingPolicy, agents: 'none' }, {
+    choose: async options => {
+      titles.push(options.title);
+      if (options.title === 'Choose your evaluator models') {
+        assert.match(options.choices.find(choice => choice.value === 'keep').description, /Working context: claude:haiku/);
+        return 'codex-economy';
+      }
+      assert.equal(options.current, 'keep');
+      return 'small';
+    },
+  });
+  assert.deepEqual(titles, ['Choose your evaluator models', 'Keep the working-context route?']);
+  assert.equal(applyInstallOptions(saved, follow).models.context, undefined);
+  const keep = await askInstall(saved, { ...onboardingPolicy, agents: 'none' }, { choose: async options => options.title === 'Choose your evaluator models' ? 'codex-economy' : options.current });
+  assert.deepEqual(applyInstallOptions(saved, keep).models.context, { provider: 'claude', model: 'haiku' });
+  const none = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents: 'none' }, {
+    choose: async options => { assert.equal(options.title, 'Choose your evaluator models', 'Without a context route there is nothing to keep'); return 'codex-economy'; },
+  });
+  assert.equal(none['context-model'], undefined);
+  const flagged = await askInstall(saved, { ...onboardingPolicy, agents: 'none', 'context-model': 'small' }, {
+    choose: async options => { assert.equal(options.title, 'Choose your evaluator models', '--context-model answers the question'); return 'codex-economy'; },
+  });
+  assert.equal(flagged['context-model'], 'small');
+});
+
+test('guided install offers the recommended checkpoints in the other mode without customizing', async () => {
+  const output = capture(), answers = ['2'];
+  const values = await askInstall(DEFAULT_CONFIG, { agents: 'none', preset: 'claude-economy' }, createPrompts({ ui: output.ui, ask: async () => answers.shift() }), { hasExistingConfig: false });
+  const text = output.text().replace(/\s+/g, ' ');
+  assert.match(text, /Recommended checkpoints, never blocking Git/);
+  assert.match(text, /sphinx check --pull-request/);
+  assert.equal(values.mode, 'on-demand');
+  for (const key of ['events', 'branches', 'remotes', 'level']) assert.equal(values[key], undefined, 'Only the mode changes');
+  assert.equal(applyInstallOptions(DEFAULT_CONFIG, values).mode, 'on-demand');
+  const onDemand = { ...structuredClone(DEFAULT_CONFIG), mode: 'on-demand' };
+  const back = await askInstall(onDemand, { agents: 'none', preset: 'claude-economy' }, {
+    choose: async options => { assert.ok(options.choices.some(choice => choice.value === 'block' && /with Git waiting/.test(choice.label))); return 'block'; },
+  });
+  assert.equal(back.mode, 'block');
+  const explicit = await askInstall(DEFAULT_CONFIG, { agents: 'none', preset: 'claude-economy', mode: 'block' }, {
+    choose: async options => { assert.deepEqual(options.choices.map(choice => choice.value), ['keep', 'custom'], '--mode already answers it'); return 'keep'; },
+  });
+  assert.equal(explicit.mode, 'block');
+});
+
+test('on-demand branch question explains that branches match the pull request base', async () => {
+  const output = capture();
+  await askPolicy(DEFAULT_CONFIG, { events: 'pre-push', mode: 'on-demand' }, createPrompts({ ui: output.ui, ask: async () => '' }));
+  assert.match(output.text().replace(/\s+/g, ' '), /pull request is checked when its base branch matches/);
+  const blocking = capture();
+  await askPolicy(DEFAULT_CONFIG, { events: 'pre-push', mode: 'block' }, createPrompts({ ui: blocking.ui, ask: async () => '' }));
+  assert.doesNotMatch(blocking.text(), /base branch matches/);
 });

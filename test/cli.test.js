@@ -308,6 +308,18 @@ test('on-demand mode is set per repository with init or as a machine-wide defaul
   assert.deepEqual(await f.calls(), []);
 });
 
+test('install with an on-demand default warns when gh is signed out and points to the pull request check', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.base, 'bin', 'gh'), '#!/bin/sh\necho "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2\nexit 1\n', { mode: 0o755 });
+  const onDemand = f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none', '--mode', 'on-demand').replace(/\s+/g, ' ');
+  assert.match(onDemand, /GitHub CLI \(gh\) is not signed in/);
+  assert.match(onDemand, /sphinx check --pull-request/);
+  assert.match(onDemand, /sphinx init --github-check/);
+  const blocking = f.cli('install', '--yes', '--mode', 'block').replace(/\s+/g, ' ');
+  assert.doesNotMatch(blocking, /GitHub CLI|--github-check/, 'Block mode never asks gh');
+  assert.deepEqual(await f.calls(), []);
+});
+
 test('CLI init defaults inherit configured destinations rather than the current feature branch', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   f.git('checkout', '-qb', 'feature/setup');
