@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_CONFIG, loadConfig, REPOSITORY_CONFIG_KEYS, writeJson } from '../src/config.js';
-import { initializeRepository } from '../src/repo-config.js';
+import { initializeRepository, setRepositoryMode } from '../src/repo-config.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'sphinx-repo-config-'));
@@ -160,4 +160,33 @@ test('the questionnaire can set a repository distance, keeping its other setting
   await setRepositoryDistance(dir, 'low');
   assert.equal(await readFile(join(dir, '.sphinxconfig'), 'utf8'), '{\n  "version": 1,\n  "branches": ["main"],\n  "distance": "low"\n}\n');
   await assert.rejects(setRepositoryDistance(dir, 'sideways'), /distance must be/);
+});
+
+test('setRepositoryMode changes only the mode value and keeps the file as written', async t => {
+  const args = await fixture(t), file = join(args.repoRoot, '.sphinxconfig');
+  const written = '{\n  "version": 1,\n  "events": ["pre-push"],\n  "branches": ["*"],\n  "mode": "block",\n  "exclude": ["dist/"]\n}\n';
+  await writeFile(file, written, { mode: 0o640 });
+  const result = await setRepositoryMode({ repoRoot: args.repoRoot, mode: 'on-demand', env: args.env });
+  assert.deepEqual({ previous: result.previous, mode: result.mode, changed: result.changed }, { previous: 'block', mode: 'on-demand', changed: true });
+  assert.equal(await readFile(file, 'utf8'), written.replace('"mode": "block"', '"mode": "on-demand"'), 'Only the value changes; compact arrays stay compact');
+  assert.equal((await stat(file)).mode & 0o777, 0o640, 'The file keeps its permissions');
+  assert.equal((await loadConfig(args.repoRoot, args.env)).mode, 'on-demand');
+  const again = await setRepositoryMode({ repoRoot: args.repoRoot, mode: 'on-demand', env: args.env });
+  assert.equal(again.changed, false);
+});
+
+test('setRepositoryMode adds a missing mode, keeps every other key, and never creates or repairs policy', async t => {
+  const args = await fixture(t), file = join(args.repoRoot, '.sphinxconfig');
+  await assert.rejects(setRepositoryMode({ repoRoot: args.repoRoot, mode: 'block', env: args.env }), /no \.sphinxconfig.*sphinx init --mode block.*--global/s);
+  await assert.rejects(stat(file), { code: 'ENOENT' }, 'sphinx init stays the only command that creates policy');
+  await writeFile(join(args.repoRoot, '.sphinx.json'), JSON.stringify({ branches: ['main'] }));
+  await assert.rejects(setRepositoryMode({ repoRoot: args.repoRoot, mode: 'block', env: args.env }), /legacy \.sphinx\.json/);
+  await rm(join(args.repoRoot, '.sphinx.json'));
+  await writeFile(file, JSON.stringify({ branches: ['release/*'], level: 'thorough' }));
+  await setRepositoryMode({ repoRoot: args.repoRoot, mode: 'on-demand', env: args.env });
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { branches: ['release/*'], level: 'thorough', mode: 'on-demand' });
+  const invalid = '{ "level": "nope", "mode": "block" }';
+  await writeFile(file, invalid);
+  await assert.rejects(setRepositoryMode({ repoRoot: args.repoRoot, mode: 'on-demand', env: args.env }), /level/);
+  assert.equal(await readFile(file, 'utf8'), invalid, 'An invalid policy is left untouched');
 });

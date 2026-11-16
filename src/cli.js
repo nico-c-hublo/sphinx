@@ -11,8 +11,8 @@ import { prefersTerminal } from './git-interview.js';
 import { createBrowserInterview, offLimits } from './browser-interview.js';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { blocksGit, DISTANCES, getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash, routeMigrationNotice, routeMigrationNoticeShown } from './config.js';
-import { initializeRepository } from './repo-config.js';
+import { blocksGit, DISTANCES, getPaths, loadConfig, readJson, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash, routeMigrationNotice, routeMigrationNoticeShown } from './config.js';
+import { initializeRepository, setRepositoryMode } from './repo-config.js';
 import { applyRepositorySetup, suggestRepositorySetup } from './repo-setup.js';
 import * as git from './git.js';
 import { install, uninstall, doctor, dispatchHook, installedAgents, detectAgents } from './install.js';
@@ -41,7 +41,7 @@ const OPTIONS = {
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
   status: ['json'], config: ['json', 'distance', 'interface', 'mode', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
-  mcp: [], yolo: ['json', 'reason'], usage: ['json'],
+  mcp: [], yolo: ['json', 'reason'], usage: ['json'], mode: ['global', 'json'],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
 const ui = () => createTerminal();
@@ -569,6 +569,83 @@ async function warnGhForOnDemand(terminal, config, cwd) {
   if (state !== 'ok') { terminal.blank(); terminal.warning(GH_READINESS_TEXT[state]); }
 }
 
+// Where the effective mode comes from: the repository's committed policy, the machine-wide default, or neither.
+async function modeSource(repo) {
+  const info = repo ? await repositoryConfigInfo(repo.root) : null;
+  if (info?.exists && (await readJson(info.path))?.mode !== undefined) return { scope: 'repository', path: info.path };
+  if ((await readJson(getPaths().config, null))?.mode !== undefined) return { scope: 'global', path: getPaths().config };
+  return { scope: 'default', path: null };
+}
+
+const MODE_TEXT = {
+  block: 'block: Git waits until you pass the understanding check.',
+  'on-demand': 'on-demand: Git is never blocked; run sphinx check --pull-request when you want the check.',
+};
+
+// Switching to on-demand stops Git from waiting, which is what an agent stuck at a checkpoint
+// would want. Only a person at a terminal can confirm it; switching to block needs no confirmation.
+async function confirmOnDemand(where) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Switching to on-demand stops Git from waiting for the understanding check, so it needs your confirmation in an interactive terminal. Run sphinx mode on-demand in your own terminal. Coding agents must not make this change.');
+  const choice = await withReadline(ask => createPrompts({ ask, ui: ui() }).choose({
+    title: `Stop Git from waiting ${where}?`,
+    description: 'Pushes and commits will go straight through. You run sphinx check --pull-request when you want the check. Needs the GitHub CLI (gh), signed in.',
+    current: 'cancel',
+    choices: [
+      { value: 'cancel', label: 'Keep Git waiting', description: 'Change nothing.' },
+      { value: 'switch', label: 'Switch to on-demand', description: 'Git is never blocked.' },
+    ],
+  }));
+  if (choice !== 'switch') throw cancelled();
+}
+
+// Toggle whether Git waits, without sphinx init: init only creates policy and never replaces it.
+async function modeCommand(value, values) {
+  if (value !== undefined && !['block', 'on-demand'].includes(value)) throw new Error(`Unknown mode ${value}. Choose block or on-demand. Usage: ${HELP.mode.usage}`);
+  const repo = await git.repository(process.cwd()).catch(() => null);
+  if (value === undefined) {
+    const config = await loadConfig(values.global ? undefined : repo?.root), source = values.global ? await modeSource(null) : await modeSource(repo);
+    const mode = config.mode ?? 'block';
+    if (values.json) { json({ mode, source: source.scope, path: source.path }); return 0; }
+    const terminal = ui(); terminal.section(values.global ? 'Machine-wide mode' : 'Mode');
+    terminal.rows([['Mode', MODE_TEXT[mode]], ['Set in', source.scope === 'repository' ? `${source.path} (this repository)` : source.scope === 'global' ? `${source.path} (machine-wide default)` : 'Nowhere; block is the default']]);
+    terminal.blank(); terminal.note(`Switch with sphinx mode ${mode === 'block' ? 'on-demand' : 'block'}${values.global || !repo ? ' --global' : ''}.`);
+    return 0;
+  }
+  if (!values.global && !repo) throw new Error(`Not inside a Git repository. To change your machine-wide default, run sphinx mode ${value} --global.`);
+  if (value === 'on-demand' && values.json) throw new Error('Switching to on-demand needs your confirmation in a terminal, so it cannot be combined with --json.');
+  // Refused before the confirmation, so nobody confirms a change that cannot be made.
+  const info = !values.global ? await repositoryConfigInfo(repo.root) : null;
+  if (info && !info.exists) throw new Error(`This repository has no .sphinxconfig, so it follows your machine-wide default. Create one with sphinx init --mode ${value}, or change the default with sphinx mode ${value} --global.`);
+  if (info?.legacy) throw new Error('This repository still uses the legacy .sphinx.json. Run sphinx init to carry it into .sphinxconfig, then run sphinx mode again.');
+  const before = await loadConfig(values.global ? undefined : repo.root);
+  if (value === 'on-demand' && (await readJson(values.global ? getPaths().config : info.path, null))?.mode !== 'on-demand') await confirmOnDemand(values.global ? 'by default on this machine' : 'in this repository');
+  let result;
+  if (values.global) {
+    const config = applyInstallOptions(await loadConfig(), { mode: value });
+    await saveConfig(config);
+    result = { scope: 'global', path: getPaths().config, previous: before.mode ?? 'block', mode: value, changed: before.mode !== value };
+  } else result = { scope: 'repository', ...await setRepositoryMode({ repoRoot: repo.root, mode: value }) };
+  const after = await loadConfig(repo?.root);
+  // A machine-wide default never reaches a repository whose .sphinxconfig sets its own mode.
+  const overridden = values.global && repo && after.mode !== value ? (await repositoryConfigInfo(repo.root)).path : null;
+  if (values.json) { json({ ...result, ...(overridden ? { overriddenBy: overridden } : {}) }); return 0; }
+  const terminal = ui();
+  const where = values.global ? 'Machine-wide default' : 'This repository';
+  if (!result.changed) terminal.success(`${where} already uses ${MODE_TEXT[value]}`);
+  else terminal.success(`${where}: ${result.previous} → ${MODE_TEXT[value]}`);
+  terminal.note(result.path);
+  if (overridden) terminal.warning(`This repository's ${path.basename(overridden)} sets its own mode, ${after.mode}, which still applies here. Run sphinx mode ${value} here to change it.`);
+  const effective = values.global ? await loadConfig() : after;
+  if (value === 'block' && effective.events.includes('pre-push')) terminal.paragraph(`Pushes to ${effective.branches.join(', ') || 'no branches'} on ${effective.remotes.includes('*') ? 'any remote' : effective.remotes.join(', ') || 'no remotes'} now wait until you pass the understanding check.`);
+  if (value === 'on-demand') await warnGhForOnDemand(terminal, effective, repo?.root ?? process.cwd());
+  if (result.changed && policyHash(before) !== policyHash(after)) terminal.note('Checks started under the previous mode no longer apply. A Git operation waiting on one stops within a few seconds; run it again to start a fresh check.');
+  if (result.changed && result.scope === 'repository') {
+    terminal.blank(); terminal.paragraph('Commit .sphinxconfig to share this with your team.');
+    if (value === 'on-demand') terminal.note('Upstream Sphinx rejects "mode": "on-demand", so everyone working in this repository needs this fork.');
+  }
+  return 0;
+}
+
 // On demand, the hooks only prepare questions in the background; a check runs without them.
 const integrationText = (active, config) => blocksGit(config)
   ? (active ? 'Active · Sphinx dispatchers are configured' : 'Not active or needs repair · run sphinx doctor')
@@ -617,14 +694,14 @@ export function parseCommandLine(argv) {
     preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, 'context-model': { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, mode: { type: 'string' }, interface: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, 'github-check': { type: 'boolean' }, suggest: { type: 'boolean' }, apply: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
-    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, browser: { type: 'boolean' }, terminal: { type: 'boolean' }, 'pull-request': { type: 'boolean' }, comment: { type: 'boolean' }, 'no-comment': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
+    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, browser: { type: 'boolean' }, terminal: { type: 'boolean' }, 'pull-request': { type: 'boolean' }, global: { type: 'boolean' }, comment: { type: 'boolean' }, 'no-comment': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
   } });
   const [command, id] = positionals;
   if (values.version || values.help || !command || command === 'help') return { values, command, id };
   if (!HELP[command]) throw new Error(`Unknown command ${command}. Run sphinx --help.`);
   for (const key of Object.keys(values)) if (!OPTIONS[command].includes(key)) throw new Error(`--${key} is not an option for ${command}. Run sphinx ${command} --help.`);
   const needsId = ['answer', 'explain', 'dispute'].includes(command);
-  if (positionals.length > (needsId ? 2 : 1)) throw new Error(`Unexpected argument. Usage: ${HELP[command].usage}`);
+  if (positionals.length > (needsId || command === 'mode' ? 2 : 1)) throw new Error(`Unexpected argument. Usage: ${HELP[command].usage}`);
   if (needsId && !id) throw new Error(`An assessment ID is required. Run sphinx pending to find it. Usage: ${HELP[command].usage}`);
   if (['answer', 'dispute'].includes(command) && !values.text?.trim()) throw new Error(`--text is required. Usage: ${HELP[command].usage}`);
   return { values, command, id };
@@ -732,6 +809,7 @@ export async function main(argv) {
     if (values.json) json(summary); else printUsage(ui(), summary, { ledgerPath: summary.ledger });
     return 0;
   }
+  if (command === 'mode') return modeCommand(id, values);
   if (command === 'yolo') {
     const repo = await git.repository(process.cwd()).catch(() => null);
     const result = await toggleYolo({ repoRoot: repo?.root ?? null, reason: values.reason });

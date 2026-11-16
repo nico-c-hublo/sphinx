@@ -104,6 +104,8 @@ For a repository where changes reach `main` through pull requests, and you check
 sphinx init --mode on-demand --branches '*'
 ```
 
+To switch a repository that already has a `.sphinxconfig`, run `sphinx mode on-demand` or `sphinx mode block` in your terminal. It changes only the mode; `init` never replaces existing policy.
+
 Commit the three files to share the policy with collaborators.
 
 ### 4. Check the setup (recommended)
