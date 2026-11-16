@@ -1,6 +1,7 @@
-import { appendFile, lstat, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import path from 'node:path';
 import { loadConfig, readJson, repositoryConfigInfo, REPOSITORY_CONFIG_KEYS, validateConfig, validateRepositoryConfig } from './config.js';
 import { PROJECT_CONTEXT_FILE, PROJECT_CONTEXT_MAX_BYTES, PROJECT_CONTEXT_TEMPLATE, contextWithDescription } from './repo-context.js';
@@ -48,6 +49,40 @@ export async function excludeFromGit(root, file) {
     await appendFile(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}# Sphinx: personal context and preferences. Commit it to share with your team.\n/${file}\n`);
     return true;
   } catch { return false; }
+}
+
+// The "mode" value in .sphinxconfig text, so a switch leaves the rest of the file as written.
+const MODE_VALUE = /("mode"\s*:\s*)"(?:block|on-demand)"/g;
+
+/**
+ * Change only "mode" in an existing .sphinxconfig, the policy a team commits.
+ * Never creates the file: sphinx init does, and init never replaces policy.
+ * Keeps every other key and the file's formatting when it can prove the edit
+ * touched nothing else; otherwise rewrites the same object with the new mode.
+ */
+export async function setRepositoryMode({ repoRoot, mode, env = process.env }) {
+  const root = path.resolve(repoRoot);
+  const info = await repositoryConfigInfo(root);
+  if (!info.exists) throw new Error(`This repository has no .sphinxconfig, so it follows your machine-wide default. Create one with sphinx init --mode ${mode}, or change the default with sphinx mode ${mode} --global.`);
+  if (info.legacy) throw new Error('This repository still uses the legacy .sphinx.json. Run sphinx init to carry it into .sphinxconfig, then run sphinx mode again.');
+  const existing = await readJson(info.path);
+  validateRepositoryConfig(existing, { env, source: '.sphinxconfig' });
+  const previous = (await loadConfig(root, env)).mode ?? 'block';
+  if (existing.mode === mode) return { path: info.path, previous, mode, changed: false };
+  const next = { ...existing, mode };
+  validateRepositoryConfig(next, { env, source: '.sphinxconfig' });
+  const text = await readFile(info.path, 'utf8');
+  const matches = text.match(MODE_VALUE) ?? [];
+  let updated = matches.length === 1 ? text.replace(MODE_VALUE, `$1${JSON.stringify(mode)}`) : null;
+  try { if (updated !== null && !isDeepStrictEqual(JSON.parse(updated), next)) updated = null; } catch { updated = null; }
+  updated ??= `${JSON.stringify(next, null, 2)}\n`;
+  // Written beside the file, then renamed over it, so a reader never sees half a policy.
+  const temporary = `${info.path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, updated, { flag: 'wx', mode: (await stat(info.path)).mode & 0o777 });
+    await rename(temporary, info.path);
+  } catch (error) { await rm(temporary, { force: true }); throw error; }
+  return { path: info.path, previous, mode, changed: true };
 }
 
 /** Create repository policy files without overwriting existing policy or ignore rules. */

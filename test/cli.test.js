@@ -308,6 +308,48 @@ test('on-demand mode is set per repository with init or as a machine-wide defaul
   assert.deepEqual(await f.calls(), []);
 });
 
+test('sphinx mode switches a repository to block anywhere, but to on-demand only from a terminal', { timeout: 30000 }, async t => {
+  const f = await fixture(t), file = path.join(f.repo, '.sphinxconfig');
+  const refused = f.run(process.execPath, [CLI, 'mode', 'block']);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /no \.sphinxconfig.*sphinx init --mode block/s, 'Without repository policy, init creates it');
+  f.cli('init', '--yes', '--mode', 'on-demand');
+  const before = await readFile(file, 'utf8');
+  assert.match(f.cli('mode').replace(/\s+/g, ' '), /on-demand: Git is never blocked.*\.sphinxconfig \(this repository\)/);
+  const blocked = f.cli('mode', 'block').replace(/\s+/g, ' ');
+  assert.match(blocked, /This repository: on-demand → block/);
+  assert.match(blocked, /now wait until you pass/);
+  assert.match(blocked, /Commit \.sphinxconfig/);
+  assert.equal(await readFile(file, 'utf8'), before.replace('"mode": "on-demand"', '"mode": "block"'), 'Only the mode changes');
+  const agent = f.run(process.execPath, [CLI, 'mode', 'on-demand']);
+  assert.notEqual(agent.status, 0);
+  assert.match(agent.stderr, /needs your confirmation in an interactive terminal/);
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).mode, 'block', 'Without a terminal Git keeps waiting');
+  assert.match(f.run(process.execPath, [CLI, 'mode', 'on-demand', '--json']).stderr, /cannot be combined with --json/);
+  assert.match(f.run(process.execPath, [CLI, 'mode', 'later']).stderr, /Choose block or on-demand/);
+  f.cli('init', '--yes', '--mode', 'on-demand');
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).mode, 'block', 'A second init still never replaces repository policy');
+  const shown = f.cliJson('mode');
+  assert.deepEqual({ ...shown, path: path.basename(shown.path) }, { mode: 'block', source: 'repository', path: '.sphinxconfig' });
+  assert.deepEqual(await f.calls(), []);
+});
+
+test('sphinx mode --global changes the machine-wide default and says when this repository overrides it', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  assert.match(f.run(process.execPath, [CLI, 'mode', 'block'], { cwd: f.base }).stderr, /Not inside a Git repository.*--global/s);
+  assert.deepEqual(f.cliJson('mode', '--global'), { mode: 'block', source: 'default', path: null });
+  f.cli('config', '--mode', 'on-demand');
+  await writeFile(path.join(f.repo, '.sphinxconfig'), JSON.stringify({ mode: 'on-demand' }));
+  const output = f.cli('mode', 'block', '--global').replace(/\s+/g, ' ');
+  assert.match(output, /Machine-wide default: on-demand → block/);
+  assert.match(output, /\.sphinxconfig sets its own mode, on-demand, which still applies here/);
+  assert.doesNotMatch(output, /Commit \.sphinxconfig/, 'The machine-wide default is not shared through the repository');
+  assert.equal(JSON.parse(await readFile(path.join(f.env.SPHINX_HOME, 'config.json'), 'utf8')).mode, 'block');
+  assert.equal(JSON.parse(await readFile(path.join(f.repo, '.sphinxconfig'), 'utf8')).mode, 'on-demand');
+  assert.match(f.run(process.execPath, [CLI, 'mode', 'on-demand', '--global']).stderr, /interactive terminal/);
+  assert.deepEqual(await f.calls(), []);
+});
+
 test('CLI init defaults inherit configured destinations rather than the current feature branch', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   f.git('checkout', '-qb', 'feature/setup');
