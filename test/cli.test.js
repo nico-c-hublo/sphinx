@@ -334,6 +334,31 @@ test('sphinx mode switches a repository to block anywhere, but to on-demand only
   assert.deepEqual(await f.calls(), []);
 });
 
+test('without an interactive terminal, sphinx mode on-demand leaves a blocking repository untouched', { timeout: 30000 }, async t => {
+  const f = await fixture(t), file = path.join(f.repo, '.sphinxconfig');
+  f.cli('init', '--yes', '--mode', 'block');
+  const before = await readFile(file, 'utf8');
+  const entries = await readdir(f.repo);
+  const refusals = [
+    f.run(process.execPath, [CLI, 'mode', 'on-demand']),
+    // A terminal on stdin alone is not enough: the confirmation also needs one on stdout.
+    f.run(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process.stdin,'isTTY',{value:true});
+      const {main}=await import(${JSON.stringify(new URL('../src/cli.js', import.meta.url).href)});
+      try { process.exitCode=await main(['mode','on-demand']); }
+      catch(error) { console.error(error.message); process.exitCode=error.exitCode||1; }`]),
+  ];
+  for (const refused of refusals) {
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /needs your confirmation in an interactive terminal.*Coding agents must not make this change/s);
+    assert.doesNotMatch(refused.stdout, /Stop Git from waiting/, 'Refused before any prompt');
+  }
+  assert.equal(await readFile(file, 'utf8'), before, 'The policy file is byte-for-byte unchanged');
+  assert.deepEqual(await readdir(f.repo), entries, 'No temporary policy file is left behind');
+  const shown = f.cliJson('mode');
+  assert.deepEqual({ ...shown, path: path.basename(shown.path) }, { mode: 'block', source: 'repository', path: '.sphinxconfig' });
+  assert.deepEqual(await f.calls(), []);
+});
+
 test('sphinx mode --global changes the machine-wide default and says when this repository overrides it', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   assert.match(f.run(process.execPath, [CLI, 'mode', 'block'], { cwd: f.base }).stderr, /Not inside a Git repository.*--global/s);
