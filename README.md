@@ -52,7 +52,7 @@ sphinx install
 
 The `sphinx-understand` package on npm is upstream's release, without this fork's changes. Install from GitHub as shown above. It also replaces an existing upstream install, and keeps your settings. To update, run the same command or use the questionnaire's update button, which installs from this fork as well (see [install the fork](docs/fork.md#install-the-fork)).
 
-Guided setup asks which coding agents you use and which reviewer to use. It suggests Sonnet through Claude Code or GPT-6 Luna through Codex. If you choose OpenRouter, it asks for an API key. It then offers the recommended checkpoints (pushes to `main` or `master` at standard depth) or **Customize** to pick events, branches, remotes, and depth. To install without prompts:
+Guided setup asks which coding agents you use and which reviewer to use. It suggests Sonnet through Claude Code or GPT-6 Luna through Codex. If you choose OpenRouter, it asks for an API key. It then offers the recommended checkpoints (pushes to `main` or `master` at standard depth), the same checkpoints in [on-demand mode](docs/configuration.md#on-demand-checks) where Git never waits, or **Customize** to pick events, mode, branches, remotes, and depth. Choosing routes by change size also asks which model keeps the [working context](docs/configuration.md#working-context). To install without prompts:
 
 ```sh
 sphinx install --yes --preset claude-economy --agents claude

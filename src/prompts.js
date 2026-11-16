@@ -92,10 +92,12 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
   const branchScope = scope === 'global'
     ? 'By default, Sphinx runs on pushes to the destination branch names below. Each repository can override these machine-wide defaults by setting branches in .sphinxconfig to its own production branch name.'
     : 'Choose the destination branches that should trigger push checks in this repository. These override your machine-wide defaults and are saved as branches in .sphinxconfig. Use this project\'s production branch name.';
+  // On demand, sphinx check --pull-request matches these against the pull request's base branch.
+  const onDemandBranches = values.mode === 'on-demand' ? ' On demand, a pull request is checked when its base branch matches; use * to check pull requests stacked on other branches too.' : '';
   const remoteScope = scope === 'global'
     ? 'By default, push checks apply to the remote names below. These are machine-wide defaults; each repository can override remotes in .sphinxconfig.'
     : 'Choose which remotes should trigger push checks in this repository. These override your machine-wide defaults and are saved as remotes in .sphinxconfig.';
-  if (values.branches === undefined) values.branches = await prompts.text({ title: 'Which branches?', description: `${branchScope} Use comma-separated names or patterns, such as main,release/*. Commit checks match the current local branch. An empty list matches no branches.`, current: config.branches.join(','), validate: value => { if (value || config.branches.length) lists(value); } });
+  if (values.branches === undefined) values.branches = await prompts.text({ title: 'Which branches?', description: `${branchScope}${onDemandBranches} Use comma-separated names or patterns, such as main,release/*. Commit checks match the current local branch. An empty list matches no branches.`, current: config.branches.join(','), validate: value => { if (value || config.branches.length) lists(value); } });
   if (values.remotes === undefined) values.remotes = await prompts.text({ title: 'Which remotes?', description: `${remoteScope} Use * for every remote, or names such as origin,upstream. This does not affect commit checks. An empty list matches no remotes.`, current: config.remotes.join(','), validate: value => { if (value || config.remotes.length) lists(value); } });
   if (values.level === undefined) values.level = await prompts.choose({ title: 'How much understanding should the check cover?', description: 'Question caps depend on change size and depth. The evaluator can ask fewer, without filler. Model selection is separate.', current: config.level, choices: [
     { value: 'relaxed', label: 'Relaxed', description: `Caps: ${questionCapsText('relaxed')}. Behavior and the most consequential edge case.` },
@@ -135,7 +137,7 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
         description: 'A separate evaluator reads filtered code without your coding conversation. Codex and Claude use their signed-in CLI and usage allowance. Pi, Cursor, and OpenCode need a separate evaluator route. Paid OpenRouter presets use API credits; choosing one enables paid requests. There is no model-call cap by default; set one later with sphinx config --max-model-calls. Setup makes no model calls.',
         current, requireSelection: !current,
         choices: [
-          ...(hasExistingConfig ? [{ value: 'keep', label: 'Keep current model routes', description: `Small: ${routeText(config.models.small)}. Medium: ${routeText(config.models.medium)}. Large: ${routeText(config.models.large)}.` }] : []),
+          ...(hasExistingConfig ? [{ value: 'keep', label: 'Keep current model routes', description: `Small: ${routeText(config.models.small)}. Medium: ${routeText(config.models.medium)}. Large: ${routeText(config.models.large)}. Working context: ${config.models.context ? routeText(config.models.context) : 'same as small'}.` }] : []),
           ...[...REVIEWER_PRESETS].sort((a, b) => (b.id === recommended) - (a.id === recommended)).map(preset => ({ value: preset.id, label: preset.id === recommended ? `${preset.label} (recommended)` : preset.label, description: preset.description })),
           { value: 'custom', label: 'Choose by change size', description: 'Set separate provider:model routes for small, medium, and large changes.' },
         ],
@@ -143,14 +145,38 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
       if (choice === 'keep') break;
       if (choice !== 'custom') {
         const selected = presetOptions(choice);
-        values = { ...selected, ...values, preset: choice, ...(selected['allow-paid'] ? { 'allow-paid': true } : {}) }; break;
+        values = { ...selected, ...values, preset: choice, ...(selected['allow-paid'] ? { 'allow-paid': true } : {}) };
+        // A preset leaves a dedicated working-context route alone; say so rather than keep it silently.
+        if (config.models.context && initial['context-model'] === undefined) {
+          const kept = routeText(config.models.context);
+          const context = await prompts.choose({
+            title: 'Keep the working-context route?',
+            description: `Presets set the three size routes only. The working context, a short orientation updated after each commit, is curated by ${kept}.`,
+            current: 'keep',
+            choices: [
+              { value: 'keep', label: `Keep ${kept}`, description: 'The working-context curator keeps its own route.' },
+              { value: 'small', label: 'Follow the small route', description: `Curate with this preset's small route, ${values.small}.` },
+            ],
+          });
+          if (context === 'small') values['context-model'] = 'small';
+        }
+        break;
       }
       const custom = Object.fromEntries(explicitTiers.map(tier => [tier, initial[tier]]));
       for (const [tier, description] of [['small', 'At most 80 changed lines and 3 files, with no consequential paths, by default.'], ['medium', 'Changes between the small and large thresholds.'], ['large', 'At least 400 lines, 12 files, or a consequential path by default.']]) {
         if (initial[tier] !== undefined) continue;
         custom[tier] = await prompts.text({ title: `Evaluator for ${tier} changes`, description: `${description} Enter provider:model, such as claude:sonnet or an OpenRouter model ID prefixed with openrouter:.`, current: routeText(config.models[tier]), validate: parseRoute });
       }
-      const paid = Object.values(custom).some(value => {
+      if (initial['context-model'] === undefined) {
+        const current = config.models.context ? routeText(config.models.context) : 'small';
+        const context = await prompts.text({
+          title: 'Evaluator for the working context',
+          description: 'One short call after each commit updates the branch\'s working context, the orientation each review starts from. Enter small to use the small route, or provider:model, such as claude:haiku.',
+          current, validate: value => { if (value !== 'small') parseRoute(value); },
+        });
+        if (context !== current) custom['context-model'] = context;
+      }
+      const paid = Object.values(custom).filter(value => value !== 'small').some(value => {
         const route = parseRoute(value);
         return route.provider === 'openrouter' && route.model && route.model !== 'openrouter/free' && !route.model.endsWith(':free');
       });
@@ -167,16 +193,28 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
   }
   // Offer the saved (or default) policy as one choice; branch, remote, and depth details stay optional.
   if (['events', 'branches', 'remotes', 'level', 'distance'].every(key => values[key] === undefined)) {
+    const keepLabel = hasExistingConfig ? 'Keep current checkpoints' : 'Recommended checkpoints';
+    // The same checkpoints with the other mode, so whether Git waits is a choice without customizing.
+    const other = config.mode === 'on-demand' ? 'block' : 'on-demand';
+    const switchMode = values.mode === undefined && config.events.length ? [{
+      value: other,
+      label: other === 'on-demand' ? `${keepLabel}, never blocking Git` : `${keepLabel}, with Git waiting`,
+      description: `${policyText({ ...config, mode: other })} ${other === 'on-demand'
+        ? 'Run sphinx check --pull-request when you want the check. Needs the GitHub CLI (gh), signed in.'
+        : 'The push or commit goes through only after you pass the understanding check.'}`,
+    }] : [];
     const policy = await prompts.choose({
       title: 'When should Sphinx check your understanding?',
       description: 'Each repository can override this later with sphinx init.',
       current: 'keep',
       choices: [
-        { value: 'keep', label: hasExistingConfig ? 'Keep current checkpoints' : 'Recommended checkpoints', description: policyText(config) },
-        { value: 'custom', label: 'Customize', description: 'Choose Git events, branches, remotes, and question depth now.' },
+        { value: 'keep', label: keepLabel, description: policyText(config) },
+        ...switchMode,
+        { value: 'custom', label: 'Customize', description: 'Choose Git events, whether Git waits, branches, remotes, and question depth now.' },
       ],
     });
     if (policy === 'keep') return values;
+    if (policy === other) return { ...values, mode: other };
   }
   return askPolicy(config, values, prompts, { scope: 'global' });
 }

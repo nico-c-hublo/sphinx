@@ -294,6 +294,7 @@ async function installCommand(initial) {
   terminal.paragraph('Each repository can override these branches and remotes in .sphinxconfig to match its own production setup.');
   printConfiguration(terminal, config);
   terminal.rows([['Agent integrations', values.agents || 'auto (detect installed agents)']]);
+  await warnGhForOnDemand(terminal, config, process.cwd());
   if (Object.values(config.models).some(route => route.provider === 'openrouter') && !(await openRouterKey())) {
     if (process.stdin.isTTY && !values.yes) await auth();
     else throw new Error('OpenRouter requires a key before installation. Set OPENROUTER_API_KEY or run sphinx auth. Alternatively choose --provider codex or --provider claude.');
@@ -313,6 +314,10 @@ async function installCommand(initial) {
   }
   terminal.section('Repository setup'); terminal.command('sphinx init');
   terminal.note('Choose repository policy, project context, and excluded paths. Use sphinx status to check Git coverage.');
+  if (!blocksGit(config)) {
+    terminal.section('Checking on demand'); terminal.command('sphinx check --pull-request');
+    terminal.note('Run it on a pull request branch when you want the check. sphinx init --github-check adds a Sphinx check to pull requests.');
+  }
   terminal.blank(); terminal.note(`Global settings: ${getPaths().config}`); return 0;
 }
 
